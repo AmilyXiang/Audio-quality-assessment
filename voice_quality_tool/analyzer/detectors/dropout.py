@@ -12,7 +12,7 @@ class DropoutDetector(BaseDetector):
         self.silence_rms_threshold = self.config.get("silence_rms_threshold", 0.01)
         self.dropout_zcr_threshold = self.config.get("dropout_zcr_threshold", 0.05)
     
-    def detect(self, features, frame, prev_features=None) -> Optional[DetectionEvent]:
+    def detect(self, features, frame, prev_features=None, is_voice_active=True) -> Optional[DetectionEvent]:
         """Detect dropout events.
         
         Dropout = sudden drop to silence (very low RMS + very low ZCR)

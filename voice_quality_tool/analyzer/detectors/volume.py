@@ -11,7 +11,7 @@ class VolumeDetector(BaseDetector):
         self.rms_change_threshold = self.config.get("rms_change_threshold", 0.4)
         self.min_history_frames = 3
     
-    def detect(self, features, frame, prev_features=None) -> Optional[DetectionEvent]:
+    def detect(self, features, frame, prev_features=None, is_voice_active=True) -> Optional[DetectionEvent]:
         """Detect volume fluctuation issues.
         
         Detects:

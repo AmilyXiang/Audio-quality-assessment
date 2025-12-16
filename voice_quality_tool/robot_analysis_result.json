@@ -1,0 +1,27 @@
+{
+  "noise": {
+    "count": 0,
+    "events": []
+  },
+  "dropout": {
+    "count": 0,
+    "events": []
+  },
+  "volume_fluctuation": {
+    "count": 2,
+    "events": [
+      {
+        "start": 4.69,
+        "end": 5.04
+      },
+      {
+        "start": 7.0,
+        "end": 7.43
+      }
+    ]
+  },
+  "voice_distortion": {
+    "count": 0,
+    "events": []
+  }
+}

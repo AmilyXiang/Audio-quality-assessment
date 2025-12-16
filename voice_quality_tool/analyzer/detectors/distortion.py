@@ -22,7 +22,7 @@ class DistortionDetector(BaseDetector):
         self.centroid_shift_threshold = self.config.get("centroid_shift_threshold", 500.0)  # Hz
         self.bandwidth_spike_threshold = self.config.get("bandwidth_spike_threshold", 1.5)
     
-    def detect(self, features, frame, prev_features=None) -> Optional[DetectionEvent]:
+    def detect(self, features, frame, prev_features=None, is_voice_active=True) -> Optional[DetectionEvent]:
         """Detect voice distortion via spectral analysis.
         
         Distortion signals:

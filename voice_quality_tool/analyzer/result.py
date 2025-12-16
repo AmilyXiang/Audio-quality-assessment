@@ -15,16 +15,37 @@ class AnalysisResult:
         """Add a detected event."""
         self.events.append(event)
     
-    def finalize(self):
-        """Post-process and merge nearby events."""
-        from .detectors.base import merge_adjacent_events
+    def finalize(self, min_duration_dict=None):
+        """Post-process: merge nearby events and filter short ones.
+        
+        Args:
+            min_duration_dict: 按问题类型的最小持续时间字典
+                              例如: {"noise": 0.15, "dropout": 0.05, ...}
+                              如果为None，使用默认0.3秒
+        """
+        from .detectors.base import merge_adjacent_events, filter_short_events
+        
+        # 默认阈值
+        if min_duration_dict is None:
+            min_duration_dict = {
+                "noise": 0.3,
+                "dropout": 0.3,
+                "volume_fluctuation": 0.3,
+                "voice_distortion": 0.3,
+            }
+        
         # Merge events by type
         event_types = set(e.event_type for e in self.events)
         merged_all = []
         for event_type in event_types:
             type_events = [e for e in self.events if e.event_type == event_type]
             merged = merge_adjacent_events(type_events, gap_threshold=0.15)
-            merged_all.extend(merged)
+            
+            # 根据问题类型使用不同的最小持续时间
+            type_min_duration = min_duration_dict.get(event_type, 0.3)
+            filtered = filter_short_events(merged, min_duration=type_min_duration)
+            merged_all.extend(filtered)
+        
         self.events = sorted(merged_all, key=lambda e: e.start_time)
     
     def to_dict(self) -> Dict:

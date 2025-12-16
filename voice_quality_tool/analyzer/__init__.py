@@ -10,6 +10,8 @@ from .features import (
     spectral_flux
 )
 from .result import AnalysisResult
+from .vad import is_voice_active, compute_baseline_stats
+from .global_distortion_analyzer import GlobalDistortionAnalyzer
 
 __all__ = [
     "Analyzer",
@@ -23,4 +25,7 @@ __all__ = [
     "zero_crossing_rate",
     "spectral_flux",
     "AnalysisResult",
+    "is_voice_active",
+    "compute_baseline_stats",
+    "GlobalDistortionAnalyzer",
 ]

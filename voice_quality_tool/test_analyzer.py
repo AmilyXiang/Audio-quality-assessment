@@ -105,6 +105,11 @@ def main():
     print("  - Dropout:   3-3.5s segment (silence)")
     print("  - Volume:    5-6s segment (rapid RMS changes)")
     print("  - Distort:   7-8s segment (high frequency noise)")
+    print("\n🎧 Human perception thresholds:")
+    print("  - Noise:      >150ms noticeable")
+    print("  - Dropout:    >50ms noticeable (most sensitive!)")
+    print("  - Volume:     >250ms noticeable")
+    print("  - Distortion: >120ms noticeable")
 
 
 if __name__ == "__main__":

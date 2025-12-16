@@ -14,7 +14,7 @@ class NoiseDetector(BaseDetector):
         self.noise_zcr_threshold = self.config.get("noise_zcr_threshold", 0.15)
         self.burst_spike_threshold = self.config.get("burst_spike_threshold", 0.3)
     
-    def detect(self, features, frame, prev_features=None) -> Optional[DetectionEvent]:
+    def detect(self, features, frame, prev_features=None, is_voice_active=True) -> Optional[DetectionEvent]:
         """Detect noise issues.
         
         Two types:
