@@ -10,6 +10,7 @@ class NoiseDetector(BaseDetector):
     def __init__(self, config=None):
         super().__init__(config)
         # Thresholds for noise detection
+        self.detect_background_noise = self.config.get("detect_background_noise", False)  # 默认不检测背景噪声
         self.high_noise_rms = self.config.get("high_noise_rms_threshold", 0.15)
         self.noise_zcr_threshold = self.config.get("noise_zcr_threshold", 0.15)
         self.burst_spike_threshold = self.config.get("burst_spike_threshold", 0.3)
@@ -26,9 +27,9 @@ class NoiseDetector(BaseDetector):
         rms = features.get("rms", 0)
         zcr = features.get("zero_crossing_rate", 0)
         
-        # Check for persistent background noise
+        # Check for persistent background noise (仅当配置启用时)
         # Noise typically has higher zero-crossing rate and moderate-high RMS
-        if zcr > self.noise_zcr_threshold:
+        if self.detect_background_noise and zcr > self.noise_zcr_threshold:
             # Likely noise (not clear voice)
             return DetectionEvent(
                 event_type="noise",

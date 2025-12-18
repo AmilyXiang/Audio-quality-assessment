@@ -25,10 +25,12 @@ class DistortionDetector(BaseDetector):
     def detect(self, features, frame, prev_features=None, is_voice_active=True) -> Optional[DetectionEvent]:
         """Detect voice distortion via spectral analysis.
         
-        Distortion signals:
-        1. High spectral flux = rapid spectrum change (encoding artifact, echo cancellation gone wrong)
-        2. Centroid shift = voice becomes tinny (high freq boost) or muffled (high freq cut)
-        3. Bandwidth spike = sudden frequency spreading (codec breakage)
+        基于标定基线对比（需要先调用 set_baseline）：
+        1. 高频谱流量 = 相比基线频谱突变（编码失真、回声消除错误）
+        2. 质心偏移 = 相比基线音色变化（变尖锐/低沉）
+        3. 带宽激增 = 相比基线频率分布异常（编解码器崩溃）
+        
+        如果未设置 baseline，则使用相邻帧对比（兼容模式）
         """
         self.add_to_history(features, frame)
         
@@ -41,26 +43,32 @@ class DistortionDetector(BaseDetector):
         if rms < 0.01:
             return None
         
-        # Check for high spectral flux (sudden spectrum change)
-        if spectral_flux > self.spectral_flux_threshold:
-            confidence = min(spectral_flux / self.spectral_flux_threshold * 0.7, 1.0)
-            return DetectionEvent(
-                event_type="voice_distortion",
-                start_time=frame.start_time,
-                end_time=frame.end_time,
-                confidence=confidence,
-                details={
-                    "reason": "high_spectral_flux",
-                    "spectral_flux": spectral_flux,
-                    "centroid": centroid
-                }
-            )
-        
-        # Check for centroid shift (frequency response anomaly)
-        if prev_features:
-            prev_centroid = prev_features.get("spectral_centroid", centroid)
-            centroid_shift = abs(centroid - prev_centroid)
+        # 模式1：基于 baseline 对比（推荐）
+        if self.baseline:
+            baseline_flux = self.baseline.get("spectral_flux", 0)
+            baseline_centroid = self.baseline.get("spectral_centroid", 0)
+            baseline_bandwidth = self.baseline.get("spectral_bandwidth", 0)
             
+            # 检测高频谱流量（相比基线）
+            if baseline_flux > 0:
+                flux_ratio = spectral_flux / baseline_flux
+                if flux_ratio > 2.0:  # 超过基线2倍
+                    confidence = min((flux_ratio - 1.0) / 2.0 * 0.7, 1.0)
+                    return DetectionEvent(
+                        event_type="voice_distortion",
+                        start_time=frame.start_time,
+                        end_time=frame.end_time,
+                        confidence=confidence,
+                        details={
+                            "reason": "high_spectral_flux_vs_baseline",
+                            "spectral_flux": spectral_flux,
+                            "baseline_flux": baseline_flux,
+                            "flux_ratio": flux_ratio
+                        }
+                    )
+            
+            # 检测质心偏移（相比基线）
+            centroid_shift = abs(centroid - baseline_centroid)
             if centroid_shift > self.centroid_shift_threshold:
                 confidence = min(centroid_shift / self.centroid_shift_threshold * 0.6, 1.0)
                 return DetectionEvent(
@@ -69,29 +77,84 @@ class DistortionDetector(BaseDetector):
                     end_time=frame.end_time,
                     confidence=confidence,
                     details={
-                        "reason": "abrupt_centroid_shift",
+                        "reason": "centroid_shift_vs_baseline",
                         "centroid_shift": centroid_shift,
-                        "prev_centroid": prev_centroid,
+                        "baseline_centroid": baseline_centroid,
                         "curr_centroid": centroid
                     }
                 )
-        
-        # Check for bandwidth spike
-        if prev_features:
-            prev_bandwidth = prev_features.get("spectral_bandwidth", bandwidth)
-            bandwidth_ratio = (bandwidth + 1.0) / (prev_bandwidth + 1.0)
             
-            if bandwidth_ratio > self.bandwidth_spike_threshold:
-                confidence = min((bandwidth_ratio - 1.0) / (self.bandwidth_spike_threshold - 1.0) * 0.5, 1.0)
+            # 检测带宽激增（相比基线）
+            if baseline_bandwidth > 0:
+                bandwidth_ratio = bandwidth / baseline_bandwidth
+                if bandwidth_ratio > self.bandwidth_spike_threshold:
+                    confidence = min((bandwidth_ratio - 1.0) / (self.bandwidth_spike_threshold - 1.0) * 0.5, 1.0)
+                    return DetectionEvent(
+                        event_type="voice_distortion",
+                        start_time=frame.start_time,
+                        end_time=frame.end_time,
+                        confidence=confidence,
+                        details={
+                            "reason": "bandwidth_spike_vs_baseline",
+                            "bandwidth_ratio": bandwidth_ratio,
+                            "baseline_bandwidth": baseline_bandwidth,
+                            "curr_bandwidth": bandwidth
+                        }
+                    )
+        
+        # 模式2：相邻帧对比（兼容模式，未标定时使用）
+        else:
+            # Check for high spectral flux (sudden spectrum change)
+            if spectral_flux > self.spectral_flux_threshold:
+                confidence = min(spectral_flux / self.spectral_flux_threshold * 0.7, 1.0)
                 return DetectionEvent(
                     event_type="voice_distortion",
                     start_time=frame.start_time,
                     end_time=frame.end_time,
                     confidence=confidence,
                     details={
-                        "reason": "bandwidth_spike",
-                        "bandwidth_ratio": bandwidth_ratio
+                        "reason": "high_spectral_flux",
+                        "spectral_flux": spectral_flux,
+                        "centroid": centroid
                     }
                 )
+            
+            # Check for centroid shift (frequency response anomaly)
+            if prev_features:
+                prev_centroid = prev_features.get("spectral_centroid", centroid)
+                centroid_shift = abs(centroid - prev_centroid)
+                
+                if centroid_shift > self.centroid_shift_threshold:
+                    confidence = min(centroid_shift / self.centroid_shift_threshold * 0.6, 1.0)
+                    return DetectionEvent(
+                        event_type="voice_distortion",
+                        start_time=frame.start_time,
+                        end_time=frame.end_time,
+                        confidence=confidence,
+                        details={
+                            "reason": "abrupt_centroid_shift",
+                            "centroid_shift": centroid_shift,
+                            "prev_centroid": prev_centroid,
+                            "curr_centroid": centroid
+                        }
+                    )
+            
+            # Check for bandwidth spike
+            if prev_features:
+                prev_bandwidth = prev_features.get("spectral_bandwidth", bandwidth)
+                bandwidth_ratio = (bandwidth + 1.0) / (prev_bandwidth + 1.0)
+                
+                if bandwidth_ratio > self.bandwidth_spike_threshold:
+                    confidence = min((bandwidth_ratio - 1.0) / (self.bandwidth_spike_threshold - 1.0) * 0.5, 1.0)
+                    return DetectionEvent(
+                        event_type="voice_distortion",
+                        start_time=frame.start_time,
+                        end_time=frame.end_time,
+                        confidence=confidence,
+                        details={
+                            "reason": "bandwidth_spike",
+                            "bandwidth_ratio": bandwidth_ratio
+                        }
+                    )
         
         return None

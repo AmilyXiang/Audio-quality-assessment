@@ -11,6 +11,21 @@ def rms(samples) -> float:
     return float(np.sqrt(np.mean(arr ** 2)))
 
 
+def rms_to_db(rms_value: float, reference: float = 1.0) -> float:
+    """Convert RMS to dB (decibels).
+    
+    Args:
+        rms_value: RMS energy value
+        reference: Reference level (default 1.0 for normalized audio)
+    
+    Returns:
+        dB value. Returns -100 dB for very small values to avoid -inf.
+    """
+    if rms_value < 1e-6:
+        return -100.0
+    return 20.0 * np.log10(rms_value / reference)
+
+
 def spectral_centroid(samples, sample_rate) -> float:
     """Compute spectral centroid (center of mass in frequency domain)."""
     arr = np.asarray(samples, dtype=np.float32)

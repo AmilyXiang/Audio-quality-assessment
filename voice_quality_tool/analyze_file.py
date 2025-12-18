@@ -7,15 +7,16 @@ Usage:
     python analyze_file.py <audio_file> [--output output.json]
     python analyze_file.py <audio_file> --profile device_profile.json
     python analyze_file.py <audio_file> --disable-vad  # 禁用VAD过滤
+    python analyze_file.py <audio_file> --mode clean-speech  # 干净语音模式
 """
 import sys
 import os
 import json
 import argparse
-from analyzer import Analyzer, frame_generator, DEFAULT_CONFIG
+from analyzer import Analyzer, frame_generator, DEFAULT_CONFIG, CLEAN_SPEECH_CONFIG
 
 
-def analyze_file(audio_path, output_path=None, profile_path=None, disable_vad=False):
+def analyze_file(audio_path, output_path=None, profile_path=None, disable_vad=False, mode='default'):
     """Load and analyze a single audio file.
     
     Args:
@@ -23,6 +24,7 @@ def analyze_file(audio_path, output_path=None, profile_path=None, disable_vad=Fa
         output_path: JSON输出路径（可选）
         profile_path: 设备配置文件路径（可选）
         disable_vad: 是否禁用VAD过滤
+        mode: 分析模式 ('default'=电话质量 或 'clean-speech'=录音室质量)
     """
     # Load audio
     try:
@@ -52,7 +54,12 @@ def analyze_file(audio_path, output_path=None, profile_path=None, disable_vad=Fa
     print(f"   Sample rate: {sample_rate} Hz, Duration: {len(data) / sample_rate:.2f}s")
 
     # Load config (from profile or default)
-    config = DEFAULT_CONFIG.copy()
+    if mode == 'clean-speech':
+        config = CLEAN_SPEECH_CONFIG.copy()
+        print("🎙️  模式: 干净语音 (播客/录音室)")
+    else:
+        config = DEFAULT_CONFIG.copy()
+        print("☎️  模式: 默认 (电话/VoIP质量)")
     
     if profile_path:
         try:
@@ -122,6 +129,12 @@ def main():
         action="store_true",
         help="Disable Voice Activity Detection (analyze all frames)"
     )
+    parser.add_argument(
+        "--mode",
+        choices=['default', 'clean-speech'],
+        default='default',
+        help="Analysis mode: 'default' (telephone/VoIP) or 'clean-speech' (studio/podcast)"
+    )
     
     args = parser.parse_args()
     
@@ -129,7 +142,8 @@ def main():
         args.audio_file, 
         args.output, 
         args.profile,
-        args.disable_vad
+        args.disable_vad,
+        args.mode
     )
     sys.exit(0 if success else 1)
 

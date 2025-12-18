@@ -34,10 +34,11 @@ DEFAULT_CONFIG = {
     },
     
     # Noise detection
+    "detect_background_noise": False,  # 默认不检测背景噪声，只检测突发噪声
     "noise_zcr_threshold": 0.15,
     "burst_spike_threshold": 0.3,
     
-    # Dropout detection
+    # Dropout detection (只检测静音卡顿)
     "silence_rms_threshold": 0.01,
     "dropout_zcr_threshold": 0.05,
     
@@ -48,6 +49,18 @@ DEFAULT_CONFIG = {
     "spectral_flux_threshold": 0.2,
     "centroid_shift_threshold": 500.0,
     "bandwidth_spike_threshold": 1.5,
+}
+
+# 干净语音配置：适用于录音室、播客等高质量专业录音
+# 参数值比默认配置放宽 4 倍，减少误报
+CLEAN_SPEECH_CONFIG = {
+    **DEFAULT_CONFIG,
+    "min_event_duration": {
+        "noise": 0.60,                # 默认150ms → 600ms
+        "dropout": 0.20,              # 默认50ms → 200ms
+        "volume_fluctuation": 1.00,   # 默认250ms → 1000ms
+        "voice_distortion": 0.50,     # 默认120ms → 500ms
+    },
 }
 
 
@@ -148,16 +161,25 @@ class Analyzer:
             if enable_vad:
                 voice_active = is_voice_active(features, self.config)
             
-            # Skip detection in non-voice segments
+            # 特别处理 Dropout 检测：即使 VAD 过滤掉，也要检测
+            # 因为 Dropout 本身就是异常的无声/尖刺，不应该被 VAD 过滤
+            dropout_event = self.dropout_detector.detect(
+                features, frame,
+                prev_features=self.prev_features,
+                is_voice_active=voice_active
+            )
+            if dropout_event:
+                result.add_event(dropout_event)
+            
+            # Skip other detections in non-voice segments
             if not voice_active:
                 self.prev_features = features
                 self.prev_frame = frame
                 continue
             
-            # Run all detectors
+            # Run remaining detectors (noise, volume, distortion)
             detectors = [
                 self.noise_detector,
-                self.dropout_detector,
                 self.volume_detector,
                 self.distortion_detector,
             ]

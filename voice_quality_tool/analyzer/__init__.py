@@ -1,5 +1,5 @@
 """Analyzer package for voice quality assessment."""
-from .analyzer import Analyzer, DEFAULT_CONFIG
+from .analyzer import Analyzer, DEFAULT_CONFIG, CLEAN_SPEECH_CONFIG
 from .frame import Frame, frame_generator
 from .features import (
     extract_features,
