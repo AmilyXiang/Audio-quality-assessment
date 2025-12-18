@@ -42,8 +42,8 @@ DEFAULT_CONFIG = {
     "silence_rms_threshold": 0.01,
     "dropout_zcr_threshold": 0.05,
     
-    # Volume fluctuation
-    "rms_change_threshold": 0.4,
+    # Volume fluctuation detection
+    "rms_change_threshold": 0.5,  # 音量波动阈值（50%变化，改为严格模式减少误报）
     
     # Distortion / voice change
     "spectral_flux_threshold": 0.2,
