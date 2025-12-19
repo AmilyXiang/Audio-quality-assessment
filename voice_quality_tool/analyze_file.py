@@ -60,7 +60,8 @@ def analyze_file(audio_path, output_path=None, profile_path=None, disable_vad=Fa
     else:
         config = DEFAULT_CONFIG.copy()
         print("☎️  模式: 默认 (电话/VoIP质量)")
-    
+
+    baseline_global = None
     if profile_path:
         try:
             with open(profile_path, 'r', encoding='utf-8') as f:
@@ -68,14 +69,23 @@ def analyze_file(audio_path, output_path=None, profile_path=None, disable_vad=Fa
             recommended = profile.get("recommended_config", {})
             config.update(recommended)
             print(f"✅ Loaded device profile: {profile_path}")
+
+            # 尝试加载语音基线特征
+            baseline_global_path = os.path.splitext(profile_path)[0] + '_global.json'
+            if os.path.exists(baseline_global_path):
+                with open(baseline_global_path, 'r', encoding='utf-8') as f:
+                    baseline_global = json.load(f)
+                print(f"✅ Loaded global baseline: {baseline_global_path}")
+            else:
+                print(f"⚠️  No global baseline found: {baseline_global_path}")
         except Exception as e:
-            print(f"⚠️  Warning: Could not load profile: {e}")
-    
+            print(f"⚠️  Warning: Could not load profile or baseline: {e}")
+
     # Apply CLI overrides
     if disable_vad:
         config["enable_vad"] = False
         print("⚠️  VAD disabled - analyzing all frames")
-    
+
     # Create analyzer
     analyzer = Analyzer(config=config)
 
@@ -83,13 +93,36 @@ def analyze_file(audio_path, output_path=None, profile_path=None, disable_vad=Fa
     frame_size = int(sample_rate * 0.025)  # 25ms frames
     hop_size = int(sample_rate * 0.010)     # 10ms hop
     frames = frame_generator(data, sample_rate, frame_size, hop_size)
-    
+
     print("🔍 Processing frames...")
     result = analyzer.analyze_frames(frames)
-    
+
+    # 全局失真分析
+    try:
+        from analyzer.global_distortion_analyzer import GlobalDistortionAnalyzer
+        gda = GlobalDistortionAnalyzer()
+        # 如果有基线，则对比
+        if baseline_global:
+            # 需要将当前音频的全局特征与基线对比
+            # 这里直接用gda.analyze_file，传入当前音频和基线特征
+            # 但gda.analyze_file默认是传入音频路径和基线音频路径
+            # 这里我们只提取当前音频的全局特征并与baseline_global对比
+            global_result = gda.analyze_file(audio_path)
+            comparison = gda._compare_features(global_result.get('global_features', {}), baseline_global)
+            print("\n📊 Global Distortion Comparison:")
+            print(json.dumps(comparison, indent=2, ensure_ascii=False))
+            result.global_comparison = comparison
+        else:
+            global_result = gda.analyze_file(audio_path)
+            print("\n📊 Global Features:")
+            print(json.dumps(global_result.get('global_features', {}), indent=2, ensure_ascii=False))
+            result.global_features = global_result.get('global_features', {})
+    except Exception as e:
+        print(f"⚠️  Global distortion analysis failed: {e}")
+
     # Output results
     result.print_summary()
-    
+
     # Save JSON if requested
     if output_path:
         with open(output_path, 'w', encoding='utf-8') as f:
@@ -99,7 +132,7 @@ def analyze_file(audio_path, output_path=None, profile_path=None, disable_vad=Fa
         # Print JSON to stdout
         print("JSON Output:")
         print(result.to_json_string())
-    
+
     return True
 
 

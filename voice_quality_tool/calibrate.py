@@ -70,7 +70,20 @@ def calibrate_device(audio_path, output_path):
     # Save profile
     with open(output_path, 'w', encoding='utf-8') as f:
         json.dump(profile, f, indent=2)
-    
+
+    # 标定整段语音的全局特征
+    try:
+        from analyzer.global_distortion_analyzer import GlobalDistortionAnalyzer
+        gda = GlobalDistortionAnalyzer()
+        global_result = gda.analyze_file(audio_path)
+        baseline_global = global_result.get('global_features', {})
+        baseline_global_path = os.path.splitext(output_path)[0] + '_global.json'
+        with open(baseline_global_path, 'w', encoding='utf-8') as f:
+            json.dump(baseline_global, f, indent=2)
+        print(f"\n✅ Global baseline saved to: {baseline_global_path}")
+    except Exception as e:
+        print(f"⚠️  Global baseline extraction failed: {e}")
+
     print(f"\n✅ Calibration complete!")
     print(f"💾 Device profile saved to: {output_path}")
     print(f"\n📋 Baseline Statistics:")
@@ -78,10 +91,10 @@ def calibrate_device(audio_path, output_path):
     print(f"   RMS Std:  {baseline.get('rms_std', 0):.4f}")
     print(f"   Centroid Mean: {baseline.get('centroid_mean', 0):.1f} Hz")
     print(f"   ZCR Mean: {baseline.get('zcr_mean', 0):.4f}")
-    
+
     print(f"\n🎯 Use this profile when analyzing:")
     print(f"   python analyze_file.py audio.wav --profile {output_path}")
-    
+
     return True
 
 
