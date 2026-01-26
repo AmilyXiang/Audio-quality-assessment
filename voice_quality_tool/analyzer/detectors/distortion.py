@@ -21,14 +21,17 @@ class DistortionDetector(BaseDetector):
         self.spectral_flux_threshold = self.config.get("spectral_flux_threshold", 0.2)
         self.centroid_shift_threshold = self.config.get("centroid_shift_threshold", 500.0)  # Hz
         self.bandwidth_spike_threshold = self.config.get("bandwidth_spike_threshold", 1.5)
+        # 第1阶段特征：削波检测
+        self.peak_to_peak_threshold = self.config.get("peak_to_peak_threshold", 1.8)  # 接近1.9为削波
     
     def detect(self, features, frame, prev_features=None, is_voice_active=True) -> Optional[DetectionEvent]:
-        """Detect voice distortion via spectral analysis.
+        """Detect voice distortion via spectral analysis and clipping detection.
         
         基于标定基线对比（需要先调用 set_baseline）：
         1. 高频谱流量 = 相比基线频谱突变（编码失真、回声消除错误）
         2. 质心偏移 = 相比基线音色变化（变尖锐/低沉）
         3. 带宽激增 = 相比基线频率分布异常（编解码器崩溃）
+        4. 削波检测 = Peak-to-Peak接近最大值（音频失真的直接证据）
         
         如果未设置 baseline，则使用相邻帧对比（兼容模式）
         """
@@ -38,6 +41,22 @@ class DistortionDetector(BaseDetector):
         centroid = features.get("spectral_centroid", 0)
         bandwidth = features.get("spectral_bandwidth", 0)
         rms = features.get("rms", 0)
+        peak_to_peak = features.get("peak_to_peak", 0)  # 第1阶段特征
+        
+        # 削波检测 - 第1阶段特征（优先检查，直接指标）
+        if peak_to_peak > self.peak_to_peak_threshold:
+            confidence = min((peak_to_peak / 2.0) ** 1.5, 1.0)  # 接近2.0时confidence接近1.0
+            return DetectionEvent(
+                event_type="voice_distortion",
+                start_time=frame.start_time,
+                end_time=frame.end_time,
+                confidence=confidence,
+                details={
+                    "reason": "audio_clipping",
+                    "peak_to_peak": peak_to_peak,
+                    "threshold": self.peak_to_peak_threshold
+                }
+            )
         
         # Skip if essentially silent
         if rms < 0.01:

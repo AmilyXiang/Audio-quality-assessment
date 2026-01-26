@@ -37,6 +37,8 @@ DEFAULT_CONFIG = {
     "detect_background_noise": False,  # 默认不检测背景噪声，只检测突发噪声
     "noise_zcr_threshold": 0.15,
     "burst_spike_threshold": 0.3,
+    "spectral_rolloff_threshold": 3000,  # 第1阶段特征：>3kHz为风噪
+    "rms_percentile_threshold": 0.3,     # 第1阶段特征：RMS P95 vs 均值比例
     
     # Dropout detection (只检测静音卡顿)
     "silence_rms_threshold": 0.01,
@@ -49,6 +51,11 @@ DEFAULT_CONFIG = {
     "spectral_flux_threshold": 0.2,
     "centroid_shift_threshold": 500.0,
     "bandwidth_spike_threshold": 1.5,
+    "peak_to_peak_threshold": 1.8,  # 第1阶段特征：接近2.0为削波
+    
+    # MFCC 配置（第2阶段特征）
+    "enable_mfcc": False,  # 默认禁用MFCC（需要librosa）
+    "mfcc_n_coefficients": 13,  # MFCC系数数量
 }
 
 # 干净语音配置：适用于录音室、播客等高质量专业录音
@@ -61,6 +68,9 @@ CLEAN_SPEECH_CONFIG = {
         "volume_fluctuation": 1.00,   # 默认250ms → 1000ms
         "voice_distortion": 0.50,     # 默认120ms → 500ms
     },
+    # 调整第1阶段特征阈值
+    "spectral_rolloff_threshold": 4000,  # 风噪阈值提高
+    "peak_to_peak_threshold": 1.9,       # 削波阈值提高（更严格）
 }
 
 

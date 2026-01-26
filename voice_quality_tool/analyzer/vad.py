@@ -47,6 +47,8 @@ def is_voice_active(features: Dict, config: Dict) -> bool:
 def compute_baseline_stats(all_features: list) -> Dict:
     """计算音频的基线统计信息（用于自适应阈值）.
     
+    包含核心特征 + 第1阶段特征
+    
     Args:
         all_features: 所有帧的特征列表
     
@@ -59,8 +61,15 @@ def compute_baseline_stats(all_features: list) -> Dict:
     rms_values = [f.get("rms", 0) for f in all_features]
     centroid_values = [f.get("spectral_centroid", 0) for f in all_features]
     zcr_values = [f.get("zero_crossing_rate", 0) for f in all_features]
+    flux_values = [f.get("spectral_flux", 0) for f in all_features]
+    
+    # 第1阶段特征（新增）
+    peak_to_peak_values = [f.get("peak_to_peak", 0) for f in all_features]
+    rolloff_values = [f.get("spectral_rolloff", 0) for f in all_features]
+    rms_percentile_values = [f.get("rms_percentile_95", 0) for f in all_features]
     
     baseline = {
+        # 核心特征
         "rms_mean": float(np.mean(rms_values)),
         "rms_std": float(np.std(rms_values)),
         "rms_p10": float(np.percentile(rms_values, 10)),
@@ -71,6 +80,20 @@ def compute_baseline_stats(all_features: list) -> Dict:
         
         "zcr_mean": float(np.mean(zcr_values)),
         "zcr_std": float(np.std(zcr_values)),
+        
+        "spectral_flux_mean": float(np.mean(flux_values)),
+        "spectral_flux_std": float(np.std(flux_values)),
+        
+        # 第1阶段特征统计
+        "peak_to_peak_mean": float(np.mean(peak_to_peak_values)),
+        "peak_to_peak_std": float(np.std(peak_to_peak_values)),
+        "peak_to_peak_max": float(np.max(peak_to_peak_values)),
+        
+        "spectral_rolloff_mean": float(np.mean(rolloff_values)),
+        "spectral_rolloff_std": float(np.std(rolloff_values)),
+        
+        "rms_percentile_mean": float(np.mean(rms_percentile_values)),
+        "rms_percentile_std": float(np.std(rms_percentile_values)),
     }
     
     return baseline

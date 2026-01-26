@@ -8,6 +8,7 @@
     python analyze_file.py test.wav --profile device_profile.json
 """
 import sys
+import os
 import json
 import argparse
 from analyzer import Analyzer, frame_generator, DEFAULT_CONFIG, compute_baseline_stats
@@ -87,10 +88,20 @@ def calibrate_device(audio_path, output_path):
     print(f"\n✅ Calibration complete!")
     print(f"💾 Device profile saved to: {output_path}")
     print(f"\n📋 Baseline Statistics:")
+    print(f"   === 核心特征 ===")
     print(f"   RMS Mean: {baseline.get('rms_mean', 0):.4f}")
     print(f"   RMS Std:  {baseline.get('rms_std', 0):.4f}")
     print(f"   Centroid Mean: {baseline.get('centroid_mean', 0):.1f} Hz")
     print(f"   ZCR Mean: {baseline.get('zcr_mean', 0):.4f}")
+    print(f"   Spectral Flux Mean: {baseline.get('spectral_flux_mean', 0):.4f}")
+    
+    # 第1阶段特征统计（如果存在）
+    if baseline.get('peak_to_peak_mean') is not None:
+        print(f"\n   === 第1阶段特征（新增）===")
+        print(f"   Peak-to-Peak Mean: {baseline.get('peak_to_peak_mean', 0):.4f}")
+        print(f"   Peak-to-Peak Std:  {baseline.get('peak_to_peak_std', 0):.4f}")
+        print(f"   Spectral Rolloff Mean: {baseline.get('spectral_rolloff_mean', 0):.1f} Hz")
+        print(f"   RMS Percentile 95: {baseline.get('rms_percentile_mean', 0):.4f}")
 
     print(f"\n🎯 Use this profile when analyzing:")
     print(f"   python analyze_file.py audio.wav --profile {output_path}")
