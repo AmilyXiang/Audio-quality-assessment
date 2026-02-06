@@ -10,6 +10,12 @@ class AnalysisResult:
     events: List[DetectionEvent] = field(default_factory=list)
     frames_processed: int = 0
     total_duration: float = 0.0
+    global_features: Optional[Dict] = None
+    global_comparison: Optional[Dict] = None
+    global_assessment: Optional[Dict] = None
+    llm_advice: Optional[str] = None
+    llm_meta: Optional[Dict] = None
+    llm_audio_summary: Optional[Dict] = None
     
     def add_event(self, event: DetectionEvent):
         """Add a detected event."""
@@ -60,6 +66,10 @@ class AnalysisResult:
             }
         """
         result = {
+            "meta": {
+                "frames_processed": self.frames_processed,
+                "total_duration": round(self.total_duration, 2),
+            },
             "noise": {"count": 0, "events": []},
             "dropout": {"count": 0, "events": []},
             "volume_fluctuation": {"count": 0, "events": []},
@@ -75,7 +85,29 @@ class AnalysisResult:
         
         # Count events
         for key in result:
+            if key == "meta":
+                continue
             result[key]["count"] = len(result[key]["events"])
+
+        # Optional: global distortion analyzer outputs
+        if self.global_features is not None or self.global_comparison is not None:
+            result["global"] = {
+                "features": self.global_features,
+                "comparison": self.global_comparison,
+                "assessment": self.global_assessment,
+            }
+
+        # Optional: LLM enrichment
+        if self.llm_advice is not None:
+            result["llm"] = {
+                "advice": self.llm_advice,
+                "meta": self.llm_meta or {},
+            }
+
+        # Optional: keep the compact audio summary used for LLM (route-1)
+        if self.llm_audio_summary is not None:
+            result.setdefault("llm", {"meta": self.llm_meta or {}})
+            result["llm"]["audio_summary"] = self.llm_audio_summary
         
         return result
     
@@ -92,6 +124,30 @@ class AnalysisResult:
         print("="*60)
         print(f"Total duration analyzed: {self.total_duration:.2f}s")
         print(f"Total frames: {self.frames_processed}")
+        print()
+
+        # Global distortion summary (system-level / whole-file)
+        global_block = data.get("global")
+        if global_block and global_block.get("assessment"):
+            qa = global_block["assessment"]
+            overall = qa.get("overall_quality", "(unknown)")
+            score = qa.get("quality_score", None)
+            comp = global_block.get("comparison") or {}
+            odi = comp.get("overall_distortion_index", None)
+
+            is_ok = isinstance(score, (int, float)) and score >= 0.85
+            prefix = "✓" if is_ok else "❌"
+
+            extra = []
+            if isinstance(score, (int, float)):
+                extra.append(f"score={score:.2f}")
+            if isinstance(odi, (int, float)):
+                extra.append(f"baseline_diff={odi:.2%}")
+            extra_text = (" (" + ", ".join(extra) + ")") if extra else ""
+
+            print(f"{prefix} GLOBAL_DISTORTION: {overall}{extra_text}")
+        else:
+            print("- GLOBAL_DISTORTION: (not available)")
         print()
         
         for issue_type in ["noise", "dropout", "volume_fluctuation", "voice_distortion"]:

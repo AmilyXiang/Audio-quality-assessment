@@ -15,6 +15,7 @@ from scipy import signal
 import json
 import os
 from typing import Dict, Tuple
+from .alignment import align_audio_precise
 
 
 class GlobalDistortionAnalyzer:
@@ -72,18 +73,92 @@ class GlobalDistortionAnalyzer:
             print(f"   采样率: {sr_base} Hz")
             print(f"   时长: {len(data_base) / sr_base:.2f}s")
             
-            baseline_features = self._compute_global_features(data_base, sr_base)
+            # 🔧 对齐音频：统一采样率 + 互相关粗对齐 + DTW精对齐（可选）
+            print(f"\n🔧 音频对齐处理...")
+            data, data_base, alignment_info = self._align_audio_v2(
+                data, sample_rate, data_base, sr_base
+            )
+            print(f"   ✓ 对齐后长度: {len(data)} 样本 ({len(data)/sample_rate:.2f}s)")
+            
+            baseline_features = self._compute_global_features(data_base, sample_rate)
             comparison = self._compare_features(global_features, baseline_features)
+            comparison['alignment_info'] = alignment_info
             
             result["baseline_comparison"] = comparison
             result["global_features"]["baseline"] = baseline_features
         
-        # 质量评估
-        result["quality_assessment"] = self._assess_quality(global_features)
+        # 质量评估（传入基线对比结果）
+        result["quality_assessment"] = self._assess_quality(
+            global_features, 
+            baseline_comparison=result.get("baseline_comparison")
+        )
         
         self._print_results(result)
         
         return result
+    
+    def _align_audio_v2(self, data1: np.ndarray, sr1: int, data2: np.ndarray, sr2: int) -> Tuple[np.ndarray, np.ndarray, dict]:
+        """
+        对齐两段音频：统一采样率 + 互相关粗对齐 + DTW精对齐
+        
+        Args:
+            data1: 音频1数据（测试音频）
+            sr1: 音频1采样率
+            data2: 音频2数据（基准音频）
+            sr2: 音频2采样率
+            
+        Returns:
+            对齐后的 (data1, data2, alignment_info)
+        """
+        # 1. 统一采样率到较高的那个
+        target_sr = max(sr1, sr2)
+        
+        if sr1 != target_sr:
+            num_samples = int(len(data1) * target_sr / sr1)
+            data1 = signal.resample(data1, num_samples)
+            print(f"   重采样测试音频: {sr1}Hz -> {target_sr}Hz")
+        
+        if sr2 != target_sr:
+            num_samples = int(len(data2) * target_sr / sr2)
+            data2 = signal.resample(data2, num_samples)
+            print(f"   重采样基准音频: {sr2}Hz -> {target_sr}Hz")
+        
+        # 2. 精确对齐（Cross-Correlation + DTW）
+        try:
+            alignment_result = align_audio_precise(
+                reference=data2,  # 基准作为参考
+                test=data1,       # 测试音频
+                sr=target_sr,
+                enable_coarse=True,
+                enable_fine=False  # DTW可选，计算较慢
+            )
+            
+            data1 = alignment_result['aligned_test']
+            data2 = alignment_result['aligned_reference']
+            
+            alignment_info = {
+                'method': alignment_result['alignment_quality'],
+                'coarse_offset_sec': alignment_result['coarse_offset'] / target_sr,
+                'coarse_confidence': alignment_result['coarse_confidence'],
+                'fine_alignment': alignment_result.get('fine_alignment')
+            }
+            
+        except Exception as e:
+            print(f"   ⚠️  对齐失败，使用简单裁剪: {e}")
+            # 降级到简单裁剪
+            min_len = min(len(data1), len(data2))
+            data1 = data1[:min_len]
+            data2 = data2[:min_len]
+            alignment_info = {'method': 'simple_trim', 'error': str(e)}
+        
+        return data1, data2, alignment_info
+    
+    def _align_audio(self, data1: np.ndarray, sr1: int, data2: np.ndarray, sr2: int) -> Tuple[np.ndarray, np.ndarray]:
+        """
+        旧版对齐（向后兼容）：统一采样率，裁剪到相同长度
+        """
+        result = self._align_audio_v2(data1, sr1, data2, sr2)
+        return result[0], result[1]  # 只返回音频，不返回alignment_info
     
     def _compute_global_features(self, data: np.ndarray, sample_rate: int) -> Dict:
         """计算音频文件的全局特征"""
@@ -302,14 +377,28 @@ class GlobalDistortionAnalyzer:
             anomaly = min(1.0, (abs(diff_ratio) - expected_range) / expected_range)
             return anomaly
     
-    def _assess_quality(self, features: Dict) -> Dict:
-        """对整段文件进行质量评估"""
+    def _assess_quality(self, features: Dict, baseline_comparison: Dict = None) -> Dict:
+        """对整段文件进行质量评估
         
+        Args:
+            features: 测试音频的全局特征
+            baseline_comparison: 基线对比结果（可选）
+            
+        Returns:
+            包含质量评估的字典
+        """
+        
+        # 如果有基线对比，优先使用相对评估
+        if baseline_comparison:
+            return self._assess_quality_relative(features, baseline_comparison)
+        
+        # 否则使用绝对评估（基于理论标准）
         assessment = {
             "overall_quality": "GOOD",
             "quality_score": 1.0,  # 0-1, 1=最好
             "issues": [],
-            "details": {}
+            "details": {},
+            "evaluation_method": "absolute"
         }
         
         score = 1.0
@@ -379,6 +468,72 @@ class GlobalDistortionAnalyzer:
         
         return assessment
     
+    def _assess_quality_relative(self, features: Dict, baseline_comparison: Dict) -> Dict:
+        """基于基线的相对质量评估
+        
+        Args:
+            features: 测试音频的全局特征
+            baseline_comparison: 基线对比结果
+            
+        Returns:
+            相对质量评估结果
+        """
+        distortion_index = baseline_comparison.get("overall_distortion_index", 0)
+        anomaly_scores = baseline_comparison.get("anomaly_scores", {})
+        differences = baseline_comparison.get("differences", {})
+        
+        # 基于失真指数计算分数
+        score = max(0.0, 1.0 - distortion_index)
+        
+        # 根据失真度分级
+        if distortion_index < 0.15:
+            quality_label = "✅ EXCELLENT (与基线高度一致)"
+        elif distortion_index < 0.30:
+            quality_label = "✅ GOOD (与基线接近)"
+        elif distortion_index < 0.50:
+            quality_label = "⚠️  FAIR (与基线有差异)"
+        else:
+            quality_label = "❌ POOR (与基线差异显著)"
+        
+        assessment = {
+            "overall_quality": quality_label,
+            "quality_score": score,
+            "evaluation_method": "relative",
+            "baseline_distortion_index": distortion_index,
+            "issues": [],
+            "details": {}
+        }
+        
+        # 列出主要异常项（异常度 >= 0.8）
+        high_anomaly_features = []
+        for feature, anomaly in anomaly_scores.items():
+            if anomaly >= 0.8:
+                diff_info = differences.get(feature, {})
+                test_val = diff_info.get('test', 0)
+                baseline_val = diff_info.get('baseline', 0)
+                diff_ratio = diff_info.get('diff_ratio', 0)
+                
+                # 格式化特征名
+                feature_name = feature.replace('_', ' ').title()
+                
+                if abs(diff_ratio) > 0.01:
+                    assessment["issues"].append(
+                        f"{feature_name}: {test_val:.4g} (基线: {baseline_val:.4g}, 偏差: {diff_ratio:+.1%})"
+                    )
+                    high_anomaly_features.append(feature_name)
+        
+        # 添加详细说明
+        if distortion_index < 0.15:
+            assessment["details"]["summary"] = "测试音频与基线高度一致，质量稳定"
+        elif distortion_index < 0.30:
+            assessment["details"]["summary"] = "测试音频与基线接近，有轻微差异"
+        elif distortion_index < 0.50:
+            assessment["details"]["summary"] = f"测试音频与基线存在明显差异，主要问题：{', '.join(high_anomaly_features[:3]) if high_anomaly_features else '多项指标偏离'}"
+        else:
+            assessment["details"]["summary"] = f"测试音频与基线差异显著，需要改善：{', '.join(high_anomaly_features[:3]) if high_anomaly_features else '多项指标严重偏离'}"
+        
+        return assessment
+    
     def _print_results(self, result: Dict):
         """打印分析结果"""
         
@@ -412,18 +567,37 @@ class GlobalDistortionAnalyzer:
         
         # 质量评估
         qa = result["quality_assessment"]
+        eval_method = qa.get("evaluation_method", "unknown")
+        
         print("\n" + "=" * 70)
         print("🎯 质量评估")
         print("=" * 70)
+        
+        # 显示评估方法
+        if eval_method == "relative":
+            print("\n📊 评估模式: 相对评估（基于基线对比）")
+            distortion_idx = qa.get("baseline_distortion_index", 0)
+            print(f"与基线差异指数: {distortion_idx:.2%}")
+        else:
+            print("\n📊 评估模式: 绝对评估（基于理论标准）")
+        
         print(f"\n整体质量: {qa['overall_quality']}")
         print(f"质量分数: {qa['quality_score']:.2f} / 1.00")
         
+        # 显示摘要
+        summary = qa.get("details", {}).get("summary")
+        if summary:
+            print(f"\n{summary}")
+        
         if qa["issues"]:
-            print(f"\n检测到的问题 ({len(qa['issues'])} 项):")
+            print(f"\n{'主要差异项' if eval_method == 'relative' else '检测到的问题'} ({len(qa['issues'])} 项):")
             for issue in qa["issues"]:
                 print(f"  ⚠️  {issue}")
         else:
-            print(f"\n✓ 未检测到明显问题")
+            if eval_method == "relative":
+                print("\n✅ 各项指标与基线一致")
+            else:
+                print("\n✓ 未检测到明显问题")
         
         # 基线对比
         if result["baseline_comparison"]:

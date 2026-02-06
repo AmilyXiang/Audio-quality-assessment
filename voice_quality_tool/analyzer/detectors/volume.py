@@ -14,12 +14,20 @@ class VolumeDetector(BaseDetector):
         self.prev_rms = None
     
     def detect(self, features, frame, prev_features=None, is_voice_active=True) -> Optional[DetectionEvent]:
-        """Detect volume fluctuation issues (AGC pumping).
+        """Detect volume fluctuation using baseline-relative thresholds.
         
         区分两种情况：
         1. AGC失效 - "泵动"效应：短时间内反复忽大忽小 ✅ 检测
         2. 说话者切换 - 单向变化：音量平稳上升或下降 ❌ 不检测
+        
+        波动判断：RMS变化超过baseline标准差的3倍
+        
+        Requires baseline to be set via set_baseline() - raises error if missing.
         """
+        # ✅ 强制要求baseline
+        if not self.baseline:
+            raise RuntimeError("❌ VolumeDetector requires baseline! Run calibrate.py first.")
+        
         self.add_to_history(features, frame)
         
         # 只在语音活跃时检测
@@ -32,16 +40,23 @@ class VolumeDetector(BaseDetector):
         
         rms = features.get("rms", 0)
         
+        # 从baseline计算正常RMS波动范围
+        baseline_rms_mean = self.baseline.get("rms_mean", 0.1)
+        baseline_rms_std = self.baseline.get("rms_std", 0.05)
+        # 正常波动 = 均值 ± 3倍标准差
+        normal_fluctuation = baseline_rms_std * 3
+        
         # 获取最近3帧的RMS
         recent_rms = [h["features"]["rms"] for h in self.history[-3:]]
         
         if not recent_rms or max(recent_rms) == 0:
             return None
         
-        rms_ratio = max(recent_rms) / (min(recent_rms) + 1e-6)
+        # 计算波动幅度（相对baseline）
+        rms_range = max(recent_rms) - min(recent_rms)
         
-        # 检查是否超过阈值
-        if rms_ratio > (1.0 + self.rms_change_threshold):
+        # 检查是否超过baseline正常波动范围
+        if rms_range > normal_fluctuation:
             # 进一步判断：是AGC失效还是说话者切换？
             # AGC失效特征：方向反复变化（大→小→大）
             # 说话者切换特征：单向变化（小→大 或 大→小）
@@ -57,7 +72,7 @@ class VolumeDetector(BaseDetector):
                 # 如果 direction_change < 0，说明方向改变（泵动迹象）
                 if direction_change < 0:
                     # 确实是AGC泵动（方向反复变化）
-                    confidence = min((rms_ratio - 1.0) / self.rms_change_threshold * 0.8, 1.0)
+                    confidence = min(rms_range / normal_fluctuation * 0.7, 1.0)
                     
                     result = DetectionEvent(
                         event_type="volume_fluctuation",
@@ -65,8 +80,10 @@ class VolumeDetector(BaseDetector):
                         end_time=frame.end_time,
                         confidence=confidence,
                         details={
-                            "reason": "agc_pumping",
-                            "rms_ratio": rms_ratio,
+                            "reason": "agc_pumping_vs_baseline",
+                            "rms_range": rms_range,
+                            "normal_fluctuation": normal_fluctuation,
+                            "baseline_rms_std": baseline_rms_std,
                             "current_rms": rms,
                             "pattern": "direction_reversal"
                         }

@@ -22,7 +22,7 @@ DEFAULT_CONFIG = {
     "vad_max_zcr": 0.18,
     
     # Baseline calibration
-    "enable_adaptive_threshold": False,  # 自适应阈值（需要先校准）
+    "enable_adaptive_threshold": True,  # ✅ 默认启用自适应阈值（强制要求标定）
     
     # 人耳感知阈值（基于声学研究和ITU-T标准）
     # 不同问题类型的人耳敏感度不同，需要差异化处理
