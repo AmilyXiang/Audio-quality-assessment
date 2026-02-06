@@ -1,3 +1,29 @@
+# Python
 .venv/
 __pycache__/
 *.pyc
+*.pyo
+*.pyd
+
+# 输出文件 - 测试结果不上传
+voice_quality_tool/nisqa/framewise_*.png
+voice_quality_tool/nisqa/framewise_*.json
+voice_quality_tool/nisqa/framewise_*.wav.json
+voice_quality_tool/comparison_*.json
+voice_quality_tool/batch_*.json
+voice_quality_tool/NISQA_results.csv
+voice_quality_tool/*.png
+voice_quality_tool/*.csv
+
+# 模型权重 - 太大，不上传
+voice_quality_tool/nisqa/weights/
+voice_quality_tool/nisqa/nisqa_repo/weights/
+
+# 第三方库 - 用户自己下载
+voice_quality_tool/nisqa/nisqa_repo/
+
+# 临时文件
+*.log
+*.tmp
+.DS_Store
+Thumbs.db
