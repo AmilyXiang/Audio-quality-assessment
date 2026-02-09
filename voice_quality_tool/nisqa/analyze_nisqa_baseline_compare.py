@@ -146,7 +146,12 @@ class BaselineComparator:
             dict: 趋势分析结果
         """
         if len(diffs) < 3:
-            return {'type': 'insufficient_data'}
+            return {
+                'type': 'insufficient_data',
+                'description': '数据不足（帧数<3）',
+                'slope': 0.0,
+                'sudden_drops': []
+            }
         
         # 线性回归分析趋势
         x = np.arange(len(diffs))
@@ -573,8 +578,10 @@ def main():
     parser = argparse.ArgumentParser(description='NISQA基准对比分析工具')
     parser.add_argument('--baseline', required=True, 
                        help='基准音频文件路径（高质量参考）')
-    parser.add_argument('--test', required=True, nargs='+',
+    parser.add_argument('--test', nargs='+',
                        help='测试音频文件路径（可多个）')
+    parser.add_argument('--test-dir', 
+                       help='测试音频文件所在目录（自动扫描所有.wav文件）')
     parser.add_argument('--model', required=True,
                        help='NISQA模型路径 (nisqa.tar)')
     parser.add_argument('--seg_length', type=float, default=15.0,
@@ -585,6 +592,29 @@ def main():
                        help='输出目录，默认当前目录')
     
     args = parser.parse_args()
+    
+    # 验证参数：必须提供--test或--test-dir之一
+    if not args.test and not args.test_dir:
+        parser.error("必须提供--test或--test-dir参数之一")
+    
+    # 如果提供了--test-dir，自动扫描目录
+    if args.test_dir:
+        import glob
+        baseline_path = os.path.abspath(args.baseline)
+        test_dir = os.path.abspath(args.test_dir)
+        
+        # 扫描所有.wav文件
+        all_wavs = sorted(glob.glob(os.path.join(test_dir, '*.wav')))
+        
+        # 排除基准文件
+        test_files = [f for f in all_wavs if os.path.abspath(f) != baseline_path]
+        
+        if not test_files:
+            print(f"[错误] 在目录 {test_dir} 中没有找到测试文件（排除基准文件后）")
+            return
+        
+        print(f"[信息] 从目录 {test_dir} 中找到 {len(test_files)} 个测试文件")
+        args.test = test_files
     
     # 1. 分析基准文件
     print("="*80)

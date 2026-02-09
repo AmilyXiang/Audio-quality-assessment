@@ -15,6 +15,19 @@ voice_quality_tool/NISQA_results.csv
 voice_quality_tool/*.png
 voice_quality_tool/*.csv
 
+# NISQA分析结果 - 不上传
+voice_quality_tool/nisqa/baseline_compare_*.json
+voice_quality_tool/nisqa/baseline_compare_*.png
+voice_quality_tool/nisqa/baseline_compare_all.png
+voice_quality_tool/nisqa/baseline_compare_heatmap.png
+voice_quality_tool/nisqa/quality_summary.json
+voice_quality_tool/nisqa/*_analysis_report.md
+voice_quality_tool/nisqa/deep_data_analysis*.md
+
+# LLM配置 - 包含API密钥，不上传
+voice_quality_tool/nisqa/llm_config.json
+voice_quality_tool/nisqa/vision_llm_config.json
+
 # 模型权重 - 太大，不上传
 voice_quality_tool/nisqa/weights/
 voice_quality_tool/nisqa/nisqa_repo/weights/

@@ -1,0 +1,31 @@
+{
+  "type": "openai",
+  "api_key": "YOUR_API_KEY_HERE",
+  "model": "deepseek-reasoner",
+  "base_url": "https://api.deepseek.com/v1",
+  "comment": {
+    "model_options": [
+      "deepseek-reasoner (推荐，深度推理)",
+      "deepseek-chat (通用对话)",
+      "deepseek-coder (代码专用)"
+    ],
+    "type_options": [
+      "openai",
+      "azure",
+      "local"
+    ],
+    "azure_example": {
+      "type": "azure",
+      "api_key": "your-azure-key",
+      "endpoint": "https://your-resource.openai.azure.com",
+      "deployment": "your-deployment-name",
+      "api_version": "2024-02-15-preview"
+    },
+    "local_example": {
+      "type": "local",
+      "base_url": "http://localhost:1234/v1",
+      "model": "local-model"
+    },
+    "usage": "复制此文件为 llm_config.json 并填入您的API密钥"
+  }
+}
