@@ -28,6 +28,14 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'nisqa_repo'))
 
 from nisqa.NISQA_model import nisqaModel
 
+# 导入Excel生成函数
+try:
+    from generate_problem_excel import process_single_file
+    EXCEL_AVAILABLE = True
+except ImportError:
+    EXCEL_AVAILABLE = False
+    print("[警告] 无法导入generate_problem_excel模块，Excel生成功能不可用")
+
 
 class BaselineComparator:
     """基准对比分析器"""
@@ -707,8 +715,14 @@ def main():
                        help='跳跃步长（秒），默认0.5')
     parser.add_argument('--output_dir', default='.',
                        help='输出目录，默认当前目录')
-    parser.add_argument('--cleanup-framewise', action='store_true',
-                       help='分析完成后自动删除framewise_*.json文件')
+    parser.add_argument('--keep-framewise', action='store_true',
+                       help='保留framewise_*.json中间文件（默认自动删除）')
+    parser.add_argument('--generate-excel', '-e', action='store_true',
+                       help='自动生成问题文件Excel报告（仅包含NOK文件）')
+    parser.add_argument('--excel-output', default='problem_files_report_v6.xlsx',
+                       help='Excel报告输出路径（默认: problem_files_report_v6.xlsx）')
+    parser.add_argument('--frame-threshold', type=float, default=-0.3,
+                       help='问题帧差异阈值（默认-0.3）')
     
     args = parser.parse_args()
     
@@ -750,6 +764,7 @@ def main():
     print("="*80)
     
     all_comparisons = []  # 收集所有对比结果
+    generated_json_files = []  # 收集本次生成的JSON文件路径
     
     for test_file in args.test:
         test_json = analyze_file_if_needed(test_file, args.model, args.seg_length, args.hop_length)
@@ -769,6 +784,7 @@ def main():
         # 保存JSON
         json_path = os.path.join(args.output_dir, f'baseline_compare_{test_basename}.json')
         comparator.save_comparison_json(comparison, json_path)
+        generated_json_files.append(json_path)  # 记录本次生成的文件
         
         print("\n" + "="*80 + "\n")
     
@@ -793,11 +809,15 @@ def main():
     else:
         print("\n[完成] 仅一个测试文件，跳过综合对比图生成")
     
-    # 清理framewise文件（如果启用）
-    if args.cleanup_framewise:
+    # 清理framewise文件（默认启用，除非指定--keep-framewise）
+    cleanup_step_executed = False
+    if not args.keep_framewise:
         import glob
+        cleanup_step_executed = True
+        # 计算清理步骤编号
+        cleanup_step_num = 3 if len(all_comparisons) == 1 else 4
         print("\n" + "="*80)
-        print("步骤4: 清理临时文件")
+        print(f"步骤{cleanup_step_num}: 清理临时文件")
         print("="*80)
         
         # 在当前目录和output_dir中查找framewise文件
@@ -823,6 +843,53 @@ def main():
             print(f"\n[清理完成] 共删除 {deleted_count} 个framewise文件")
         else:
             print("\n[清理完成] 未找到framewise文件")
+    
+    # 生成Excel报告（如果启用）
+    if args.generate_excel:
+        if not EXCEL_AVAILABLE:
+            print("\n[错误] Excel生成功能不可用，请检查generate_problem_excel.py是否存在")
+        else:
+            # 计算步骤编号
+            excel_step_num = 3
+            if len(all_comparisons) > 1:
+                excel_step_num += 1  # 综合对比图
+            if cleanup_step_executed:
+                excel_step_num += 1  # 清理临时文件
+            
+            print("\n" + "="*80)
+            print(f"步骤{excel_step_num}: 生成Excel问题报告")
+            print("="*80)
+            
+            # 使用本次生成的JSON文件，而不是扫描所有历史文件
+            if not generated_json_files:
+                print("[警告] 本次未生成baseline_compare JSON文件，跳过Excel生成")
+            else:
+                excel_path = Path(args.excel_output)
+                # 如果Excel文件已存在，删除它以重新生成
+                if excel_path.exists():
+                    excel_path.unlink()
+                    print(f"[信息] 已删除旧Excel文件: {excel_path}")
+                
+                print(f"[信息] 本次生成 {len(generated_json_files)} 个对比文件")
+                print(f"[信息] 问题帧阈值: {args.frame_threshold}")
+                print(f"[信息] Excel输出: {excel_path}")
+                print("")
+                
+                nok_count = 0
+                ok_count = 0
+                
+                for json_file in sorted(generated_json_files):
+                    if process_single_file(json_file, excel_path, args.frame_threshold):
+                        nok_count += 1
+                    else:
+                        ok_count += 1
+                
+                print("")
+                print(f"[完成] Excel报告生成完毕")
+                print(f"  - OK文件: {ok_count} 个（已跳过）")
+                print(f"  - NOK文件: {nok_count} 个（已记录到Excel）")
+                print(f"[保存] {excel_path}")
+                print("="*80)
 
 
 if __name__ == '__main__':
