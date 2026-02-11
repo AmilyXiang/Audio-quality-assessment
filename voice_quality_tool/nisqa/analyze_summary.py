@@ -30,97 +30,51 @@ def load_all_comparisons(output_dir):
 def analyze_quality_issues(comparisons):
     """分析质量问题"""
     
-    # 分类统计
-    severe_issues = []  # 严重问题（>50%帧低于基准）
-    moderate_issues = []  # 中等问题（20-50%帧低于基准）
-    good_quality = []  # 质量良好（<20%帧低于基准）
+    # OK/NOK分类
+    ok_files = []
+    nok_files = []
     
-    # 各维度问题统计
-    dimension_stats = {
-        'MOS': {'severe': [], 'moderate': [], 'good': []},
-        'NOI': {'severe': [], 'moderate': [], 'good': []},
-        'DIS': {'severe': [], 'moderate': [], 'good': []},
-        'COL': {'severe': [], 'moderate': [], 'good': []},
-        'LOUD': {'severe': [], 'moderate': [], 'good': []}
-    }
-    
-    # 文件级质量评分（基于MOS差值）
-    mos_rankings = []
+    # 问题维度统计
+    nok_by_dimension = defaultdict(list)
     
     for comp in comparisons:
         filename = comp['filename']
         data = comp['data']
         
-        # 获取metrics（正确的JSON结构）
-        metrics = data.get('metrics', {})
+        # 获取状态（新的判定字段）
+        status = data.get('status', 'UNKNOWN')
+        nok_dimensions = data.get('nok_dimensions', [])
+        nok_reasons = data.get('nok_reasons', {})
         
-        # MOS维度评估
-        mos_stats = metrics.get('mos', {}).get('stats', {})
-        mos_below_pct = mos_stats.get('percent_below_baseline', 0)
-        mos_mean_diff = mos_stats.get('mean_diff', 0)
-        
-        # 文件级MOS差值（使用正确的路径：file_level.diff.mos）
+        # 文件级差值
         file_level = data.get('file_level', {})
         file_diff = file_level.get('diff', {})
-        mos_file_diff = file_diff.get('mos', 0)
         
-        mos_rankings.append({
+        file_info = {
             'filename': filename,
-            'mos_diff': mos_file_diff,
-            'mos_below_pct': mos_below_pct
-        })
-        
-        # 统计各维度问题（使用正确的维度名称映射）
-        dim_mapping = {
-            'MOS': 'mos',
-            'NOI': 'noi',
-            'DIS': 'dis',
-            'COL': 'col',
-            'LOUD': 'loud'
+            'status': status,
+            'nok_dimensions': nok_dimensions,
+            'nok_reasons': nok_reasons,
+            'mos_diff': file_diff.get('mos', 0),
+            'noi_diff': file_diff.get('noi', 0),
+            'dis_diff': file_diff.get('dis', 0),
+            'col_diff': file_diff.get('col', 0),
+            'loud_diff': file_diff.get('loud', 0)
         }
         
-        for dim_upper, dim_lower in dim_mapping.items():
-            dim_stats = metrics.get(dim_lower, {}).get('stats', {})
-            below_pct = dim_stats.get('percent_below_baseline', 0)
-            
-            if below_pct > 50:
-                dimension_stats[dim_upper]['severe'].append(filename)
-            elif below_pct > 20:
-                dimension_stats[dim_upper]['moderate'].append(filename)
-            else:
-                dimension_stats[dim_upper]['good'].append(filename)
-        
-        # 判断整体质量（基于MOS）
-        if mos_below_pct > 50:
-            severe_issues.append({
-                'filename': filename,
-                'mos_below_pct': mos_below_pct,
-                'mos_file_diff': mos_file_diff,
-                'metrics': metrics
-            })
-        elif mos_below_pct > 20:
-            moderate_issues.append({
-                'filename': filename,
-                'mos_below_pct': mos_below_pct,
-                'mos_file_diff': mos_file_diff
-            })
-        else:
-            good_quality.append({
-                'filename': filename,
-                'mos_below_pct': mos_below_pct,
-                'mos_file_diff': mos_file_diff
-            })
-    
-    # 按MOS文件级差值排序
-    mos_rankings.sort(key=lambda x: x['mos_diff'])
+        if status == 'OK':
+            ok_files.append(file_info)
+        else:  # NOK
+            nok_files.append(file_info)
+            # 统计各问题维度
+            for dim in nok_dimensions:
+                nok_by_dimension[dim].append(filename)
     
     return {
         'total': len(comparisons),
-        'severe_issues': severe_issues,
-        'moderate_issues': moderate_issues,
-        'good_quality': good_quality,
-        'dimension_stats': dimension_stats,
-        'mos_rankings': mos_rankings
+        'ok_files': ok_files,
+        'nok_files': nok_files,
+        'nok_by_dimension': dict(nok_by_dimension)
     }
 
 def print_summary_report(analysis):
@@ -130,75 +84,41 @@ def print_summary_report(analysis):
     print("=" * 100)
     
     total = analysis['total']
-    severe = len(analysis['severe_issues'])
-    moderate = len(analysis['moderate_issues'])
-    good = len(analysis['good_quality'])
+    ok_count = len(analysis['ok_files'])
+    nok_count = len(analysis['nok_files'])
     
-    print(f"\n📊 整体统计（基于MOS总体质量）")
+    print(f"\n📊 整体统计")
     print(f"  总文件数: {total}")
-    print(f"  ✓ 质量良好: {good} ({good/total*100:.1f}%) - 低于基准帧数 <20%")
-    print(f"  ⚠️  中等劣化: {moderate} ({moderate/total*100:.1f}%) - 低于基准帧数 20-50%")
-    print(f"  ✗ 严重劣化: {severe} ({severe/total*100:.1f}%) - 低于基准帧数 >50%")
+    print(f"  ✓ OK文件: {ok_count} ({ok_count/total*100:.1f}%) - 质量相当或优于基准")
+    print(f"  ✗ NOK文件: {nok_count} ({nok_count/total*100:.1f}%) - 质量劣于基准")
     
-    # 各维度统计
-    print(f"\n📈 各维度质量分布")
-    print(f"{'维度':<10} {'质量良好':<15} {'中等劣化':<15} {'严重劣化':<15}")
-    print("-" * 60)
+    # NOK维度统计
+    if analysis['nok_by_dimension']:
+        print(f"\n📈 NOK文件问题维度分布")
+        print(f"{'维度':<15} {'文件数':<10}")
+        print("-" * 30)
+        
+        for dim, files in sorted(analysis['nok_by_dimension'].items()):
+            print(f"{dim:<15} {len(files):<10}")
     
-    for dim_name in ['MOS', 'NOI', 'DIS', 'COL', 'LOUD']:
-        stats = analysis['dimension_stats'][dim_name]
-        good_count = len(stats['good'])
-        mod_count = len(stats['moderate'])
-        sev_count = len(stats['severe'])
-        print(f"{dim_name:<10} {good_count:<15} {mod_count:<15} {sev_count:<15}")
-    
-    # 最差的20个文件（MOS）
-    print(f"\n⚠️  MOS质量最差的20个文件")
-    print(f"{'排名':<6} {'文件名':<60} {'MOS差值':<12} {'低于基准%':<12}")
-    print("-" * 95)
-    
-    worst_20 = analysis['mos_rankings'][:20]
-    for i, item in enumerate(worst_20, 1):
-        print(f"{i:<6} {item['filename']:<60} {item['mos_diff']:>+8.3f}     {item['mos_below_pct']:>6.1f}%")
-    
-    # 最好的10个文件（MOS）
-    print(f"\n✓ MOS质量最好的10个文件")
-    print(f"{'排名':<6} {'文件名':<60} {'MOS差值':<12} {'低于基准%':<12}")
-    print("-" * 95)
-    
-    best_10 = analysis['mos_rankings'][-10:][::-1]
-    for i, item in enumerate(best_10, 1):
-        print(f"{i:<6} {item['filename']:<60} {item['mos_diff']:>+8.3f}     {item['mos_below_pct']:>6.1f}%")
-    
-    # 严重问题详情
-    if analysis['severe_issues']:
-        print(f"\n🚨 严重质量问题文件详情（MOS低于基准帧数>50%）")
+    # NOK文件详情
+    if analysis['nok_files']:
+        print(f"\n🚨 NOK文件详情")
         print("=" * 100)
         
-        for item in sorted(analysis['severe_issues'], key=lambda x: x['mos_below_pct'], reverse=True):
+        for item in analysis['nok_files']:
             print(f"\n【{item['filename']}】")
-            print(f"  MOS低于基准帧数: {item['mos_below_pct']:.1f}%")
-            print(f"  文件级MOS差值: {item['mos_file_diff']:+.3f}")
+            print(f"  问题维度: {', '.join(item['nok_dimensions'])}")
             
-            # 显示各维度问题
-            metrics = item['metrics']
-            problem_dims = []
-            dim_mapping = {'noi': 'NOI', 'dis': 'DIS', 'col': 'COL', 'loud': 'LOUD'}
+            # 显示判定原因
+            nok_reasons = item.get('nok_reasons', {})
+            if nok_reasons:
+                print(f"  判定依据:")
+                for dim, reason in nok_reasons.items():
+                    print(f"    - {dim}: {reason}")
             
-            for dim_lower, dim_upper in dim_mapping.items():
-                dim_stats = metrics.get(dim_lower, {}).get('stats', {})
-                below_pct = dim_stats.get('percent_below_baseline', 0)
-                if below_pct > 50:
-                    problem_dims.append(f"{dim_upper}({below_pct:.1f}%)")
-            
-            if problem_dims:
-                print(f"  其他问题维度: {', '.join(problem_dims)}")
-    
-    # NOI（噪声）问题突出的文件
-    noi_severe = analysis['dimension_stats']['NOI']['severe']
-    if len(noi_severe) > 20:
-        print(f"\n🔊 NOI（噪声）问题严重文件: {len(noi_severe)} 个")
-        print("  前20个噪声问题最严重的文件已在上面MOS最差列表中体现")
+            print(f"  文件级差值: MOS={item['mos_diff']:+.3f}, NOI={item['noi_diff']:+.3f}, "
+                  f"DIS={item['dis_diff']:+.3f}, COL={item['col_diff']:+.3f}, LOUD={item['loud_diff']:+.3f}")
     
     print("\n" + "=" * 100)
     print("分析完成！")
@@ -213,28 +133,12 @@ def save_summary_json(analysis, output_path):
     summary = {
         'total_files': analysis['total'],
         'quality_distribution': {
-            'good': len(analysis['good_quality']),
-            'moderate': len(analysis['moderate_issues']),
-            'severe': len(analysis['severe_issues'])
+            'ok': len(analysis['ok_files']),
+            'nok': len(analysis['nok_files'])
         },
-        'dimension_statistics': {
-            dim: {
-                'good': len(stats['good']),
-                'moderate': len(stats['moderate']),
-                'severe': len(stats['severe'])
-            }
-            for dim, stats in analysis['dimension_stats'].items()
-        },
-        'worst_20_files': analysis['mos_rankings'][:20],
-        'best_10_files': analysis['mos_rankings'][-10:][::-1],
-        'severe_issue_files': [
-            {
-                'filename': item['filename'],
-                'mos_below_pct': item['mos_below_pct'],
-                'mos_file_diff': item['mos_file_diff']
-            }
-            for item in analysis['severe_issues']
-        ]
+        'nok_by_dimension': analysis['nok_by_dimension'],
+        'ok_files': analysis['ok_files'],
+        'nok_files': analysis['nok_files']
     }
     
     with open(output_path, 'w', encoding='utf-8') as f:

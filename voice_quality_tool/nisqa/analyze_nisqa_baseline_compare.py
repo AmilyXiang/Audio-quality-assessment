@@ -53,6 +53,45 @@ class BaselineComparator:
         with open(path, 'r', encoding='utf-8') as f:
             return json.load(f)
     
+    def _align_frames(self, baseline_frames, test_frames, metric='mos'):
+        """
+        使用互相关对齐两个帧序列
+        
+        Args:
+            baseline_frames: 基准帧列表
+            test_frames: 测试帧列表
+            metric: 用于对齐的指标（默认MOS）
+            
+        Returns:
+            tuple: (对齐后的基准帧, 对齐后的测试帧, 偏移量)
+        """
+        # 提取指标值序列
+        baseline_values = np.array([f[metric] for f in baseline_frames])
+        test_values = np.array([f[metric] for f in test_frames])
+        
+        # 计算互相关
+        correlation = np.correlate(baseline_values, test_values, mode='full')
+        
+        # 找到最大相关位置
+        lag = correlation.argmax() - (len(test_values) - 1)
+        
+        # 根据偏移量对齐
+        if lag > 0:
+            # 测试序列需要向右移动（基准从lag开始）
+            aligned_baseline = baseline_frames[lag:]
+            aligned_test = test_frames[:len(aligned_baseline)]
+        elif lag < 0:
+            # 测试序列需要向左移动（测试从-lag开始）
+            aligned_test = test_frames[-lag:]
+            aligned_baseline = baseline_frames[:len(aligned_test)]
+        else:
+            # 完美对齐
+            min_len = min(len(baseline_frames), len(test_frames))
+            aligned_baseline = baseline_frames[:min_len]
+            aligned_test = test_frames[:min_len]
+        
+        return aligned_baseline, aligned_test, lag
+    
     def compare_with_test(self, test_json_path):
         """
         对比测试文件与基准
@@ -66,15 +105,14 @@ class BaselineComparator:
         test_data = self._load_json(test_json_path)
         test_frames = test_data['frame_level']['frames']
         
-        # 验证帧数一致
-        if len(test_frames) != len(self.baseline_frames):
-            print(f"[警告] 帧数不一致: 基准={len(self.baseline_frames)}, 测试={len(test_frames)}")
-            # 取最小帧数
-            min_frames = min(len(test_frames), len(self.baseline_frames))
-            test_frames = test_frames[:min_frames]
-            baseline_frames = self.baseline_frames[:min_frames]
-        else:
-            baseline_frames = self.baseline_frames
+        # 对齐帧序列
+        baseline_frames, test_frames, lag = self._align_frames(self.baseline_frames, test_frames)
+        
+        if lag != 0:
+            print(f"[对齐] 检测到时间偏移: {lag}帧 ({lag * 0.5:.1f}秒), 已自动对齐")
+        
+        if len(test_frames) != len(baseline_frames):
+            print(f"[对齐后] 基准帧数={len(baseline_frames)}, 测试帧数={len(test_frames)}")
         
         # 计算逐帧差值
         metrics = ['mos', 'noi', 'dis', 'col', 'loud']
@@ -133,6 +171,63 @@ class BaselineComparator:
                 'trend': self._analyze_trend(diffs)
             }
         
+        # 混合判定逻辑（方案3）：帧级为主 + 突变检测 + 文件级参考
+        status_tags = []
+        nok_reasons = {}  # 记录判定原因
+        
+        # 两阶段判定逻辑：
+        # 阶段1: 仅看MOS维度判定OK/NOK（MOS是总体质量指标）
+        # 阶段2: 对于NOK文件，分析各维度问题帧（问题定位，非判定依据）
+        
+        mos_metrics = comparison['metrics']['mos']
+        mos_file_diff = comparison['file_level']['diff']['mos']
+        mos_below_pct = mos_metrics['stats']['percent_below_baseline']
+        mos_mean_diff = mos_metrics['stats']['mean_diff']
+        mos_min_diff = mos_metrics['stats']['min_diff']
+        
+        # 阶段1: 仅用MOS判定OK/NOK
+        is_nok = False
+        if mos_below_pct > 50 and mos_file_diff < -0.05:
+            # MOS帧劣化严重 且 文件级分数也差 → NOK
+            nok_reasons['MOS'] = f'{mos_below_pct:.0f}%帧劣化 且 文件级劣化{mos_file_diff:.2f}'
+            is_nok = True
+        elif mos_min_diff < -0.5 and mos_file_diff < -0.05:
+            # MOS存在严重突降 且 文件级分数差 → NOK
+            nok_reasons['MOS'] = f'严重突降({mos_min_diff:.2f}) 且 文件级劣化{mos_file_diff:.2f}'
+            is_nok = True
+        
+        # 阶段2: 对于NOK文件，记录各维度的问题帧（用于问题定位）
+        problem_dimensions = {}  # 不参与OK/NOK判定，仅作问题分析参考
+        if is_nok:
+            for dim in ['noi', 'dis', 'col', 'loud']:
+                dim_metrics = comparison['metrics'][dim]
+                file_diff = comparison['file_level']['diff'][dim]
+                below_pct = dim_metrics['stats']['percent_below_baseline']
+                min_diff = dim_metrics['stats']['min_diff']
+                
+                # 记录该维度的问题情况（但不影响OK/NOK判定）
+                if below_pct > 70 and file_diff < -0.1:
+                    problem_dimensions[dim.upper()] = f'{below_pct:.0f}%帧劣化 且 文件级劣化{file_diff:.2f}'
+                elif min_diff < -0.5 and file_diff < -0.1:
+                    problem_dimensions[dim.upper()] = f'严重突降({min_diff:.2f}) 且 文件级劣化{file_diff:.2f}'
+                elif below_pct > 50:
+                    # 轻度问题也记录下来
+                    problem_dimensions[dim.upper()] = f'{below_pct:.0f}%帧劣化（轻度）'
+        
+        # 设置判定结果
+        if is_nok:
+            status_tags.append('MOS_NOK')
+            comparison['problem_dimensions'] = problem_dimensions  # 问题维度详情
+        
+        # 综合状态
+        if status_tags:
+            comparison['status'] = 'NOK'
+            comparison['nok_dimensions'] = status_tags
+            comparison['nok_reasons'] = nok_reasons
+        else:
+            comparison['status'] = 'OK'
+            comparison['nok_dimensions'] = []
+        
         return comparison
     
     def _analyze_trend(self, diffs):
@@ -188,7 +283,7 @@ class BaselineComparator:
             'sudden_drops': sudden_drops
         }
     
-    def print_comparison_report(self, comparison):
+    def print_comparison_report(self, comparison, detail_for_nok_only=True):
         """打印对比报告"""
         print("\n" + "="*80)
         print("NISQA 基准对比分析报告")
@@ -197,6 +292,23 @@ class BaselineComparator:
         print(f"\n【基准文件】 {comparison['baseline_file']}")
         print(f"【测试文件】 {comparison['test_file']}")
         print(f"【总帧数】   {comparison['total_frames']}")
+        print(f"【质量判定】 {comparison['status']}", end="")
+        if comparison['status'] == 'NOK':
+            print(f" ({', '.join(comparison['nok_dimensions'])})")
+            # 显示MOS判定依据
+            nok_reasons = comparison.get('nok_reasons', {})
+            if nok_reasons:
+                print(f"【判定依据】")
+                for dim, reason in nok_reasons.items():
+                    print(f"  - {dim}: {reason}")
+            # 显示其他维度的问题情况（仅作参考，不影响判定）
+            problem_dims = comparison.get('problem_dimensions', {})
+            if problem_dims:
+                print(f"【问题维度】（仅供参考，不影响OK/NOK判定）")
+                for dim, desc in problem_dims.items():
+                    print(f"  - {dim}: {desc}")
+        else:
+            print(" ✓")
         
         # 文件级对比
         print("\n" + "-"*80)
@@ -217,9 +329,14 @@ class BaselineComparator:
             
             print(f"{metric.upper():<12} {base_val:<10.3f} {test_val:<10.3f} {diff:+.3f}     {status}")
         
-        # 逐维度详细分析
+        # 根据状态决定是否输出帧级详细分析
+        if detail_for_nok_only and comparison['status'] == 'OK':
+            print("\n[跳过帧级分析] 文件质量判定为OK，无需详细分析")
+            return
+        
+        # 逐维度详细分析（仅NOK文件）
         print("\n" + "="*80)
-        print("帧级详细分析")
+        print("帧级详细分析 (NOK文件)")
         print("="*80)
         
         for metric in ['mos', 'noi', 'dis', 'col', 'loud']:
@@ -590,6 +707,8 @@ def main():
                        help='跳跃步长（秒），默认0.5')
     parser.add_argument('--output_dir', default='.',
                        help='输出目录，默认当前目录')
+    parser.add_argument('--cleanup-framewise', action='store_true',
+                       help='分析完成后自动删除framewise_*.json文件')
     
     args = parser.parse_args()
     
@@ -673,6 +792,37 @@ def main():
         print(f"  - 质量热力图: {heatmap_path}")
     else:
         print("\n[完成] 仅一个测试文件，跳过综合对比图生成")
+    
+    # 清理framewise文件（如果启用）
+    if args.cleanup_framewise:
+        import glob
+        print("\n" + "="*80)
+        print("步骤4: 清理临时文件")
+        print("="*80)
+        
+        # 在当前目录和output_dir中查找framewise文件
+        search_dirs = ['.', args.output_dir]
+        if os.path.dirname(baseline_json):
+            search_dirs.append(os.path.dirname(baseline_json))
+        
+        # 去重
+        search_dirs = list(set([os.path.abspath(d) for d in search_dirs]))
+        
+        deleted_count = 0
+        for search_dir in search_dirs:
+            framewise_files = glob.glob(os.path.join(search_dir, 'framewise_*.json'))
+            for fpath in framewise_files:
+                try:
+                    os.remove(fpath)
+                    print(f"[已删除] {os.path.relpath(fpath)}")
+                    deleted_count += 1
+                except Exception as e:
+                    print(f"[删除失败] {os.path.relpath(fpath)}: {e}")
+        
+        if deleted_count > 0:
+            print(f"\n[清理完成] 共删除 {deleted_count} 个framewise文件")
+        else:
+            print("\n[清理完成] 未找到framewise文件")
 
 
 if __name__ == '__main__':

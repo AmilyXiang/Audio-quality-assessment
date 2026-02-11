@@ -16,23 +16,20 @@ def load_detailed_analysis_data(summary_path, json_dir, num_worst=15, num_best=1
     with open(summary_path, 'r', encoding='utf-8') as f:
         summary = json.load(f)
     
-    # 获取文件列表
-    worst_files = summary.get('worst_20_files', [])[:num_worst]
-    best_files = summary.get('best_10_files', [])[:num_best]
+    # 获取NOK文件列表（只分析有问题的文件）
+    nok_files = summary.get('nok_files', [])
     
     # 深度分析数据结构
     deep_analysis = {
-        'worst_files_detail': [],
-        'best_files_detail': [],
+        'nok_files_detail': [],
+        'statistical_summary': {},
         'time_series_patterns': {},
-        'correlation_analysis': {},
-        'anomaly_detection': {},
-        'statistical_summary': {}
+        'anomaly_detection': {}
     }
     
-    # 分析最差文件
-    print(f"正在深度分析最差的{num_worst}个文件...")
-    for item in worst_files:
+    # 分析NOK文件
+    print(f"正在深度分析{len(nok_files)}个NOK文件...")
+    for item in nok_files:
         filename = item['filename']
         json_path = Path(json_dir) / f"baseline_compare_{filename}.json"
         
@@ -42,38 +39,26 @@ def load_detailed_analysis_data(summary_path, json_dir, num_worst=15, num_best=1
                 
                 # 提取详细数据
                 detail = analyze_single_file_deeply(filename, data, item)
-                deep_analysis['worst_files_detail'].append(detail)
-    
-    # 分析最好文件
-    print(f"正在深度分析最好的{num_best}个文件...")
-    for item in best_files:
-        filename = item['filename']
-        json_path = Path(json_dir) / f"baseline_compare_{filename}.json"
-        
-        if json_path.exists():
-            with open(json_path, 'r', encoding='utf-8') as f:
-                data = json.load(f)
-                detail = analyze_single_file_deeply(filename, data, item)
-                deep_analysis['best_files_detail'].append(detail)
+                deep_analysis['nok_files_detail'].append(detail)
     
     # 跨文件统计分析
-    print("正在进行跨文件统计分析...")
-    deep_analysis['statistical_summary'] = compute_cross_file_statistics(
-        deep_analysis['worst_files_detail'],
-        deep_analysis['best_files_detail']
-    )
-    
-    # 时间模式分析
-    print("正在分析时间模式...")
-    deep_analysis['time_series_patterns'] = analyze_time_patterns(
-        deep_analysis['worst_files_detail'] + deep_analysis['best_files_detail']
-    )
-    
-    # 异常检测
-    print("正在检测异常模式...")
-    deep_analysis['anomaly_detection'] = detect_anomalies(
-        deep_analysis['worst_files_detail']
-    )
+    if deep_analysis['nok_files_detail']:
+        print("正在进行跨文件统计分析...")
+        deep_analysis['statistical_summary'] = compute_cross_file_statistics(
+            deep_analysis['nok_files_detail']
+        )
+        
+        # 时间模式分析
+        print("正在分析时间模式...")
+        deep_analysis['time_series_patterns'] = analyze_time_patterns(
+            deep_analysis['nok_files_detail']
+        )
+        
+        # 异常检测
+        print("正在检测异常模式...")
+        deep_analysis['anomaly_detection'] = detect_anomalies(
+            deep_analysis['nok_files_detail']
+        )
     
     return summary, deep_analysis
 
@@ -88,6 +73,8 @@ def analyze_single_file_deeply(filename, data, summary_item):
         'filename': filename,
         'mos_diff': summary_item.get('mos_diff', 0),
         'mos_below_pct': summary_item.get('mos_below_pct', 0),
+        'nok_dimensions': summary_item.get('nok_dimensions', []),
+        'nok_reasons': summary_item.get('nok_reasons', {}),
         'file_level_scores': file_level,
         'frame_analysis': {},
         'trend_info': {},
@@ -176,34 +163,20 @@ def parse_filename_metadata(filename):
     
     return metadata
 
-def compute_cross_file_statistics(worst_files, best_files):
-    """计算跨文件统计特征"""
+def compute_cross_file_statistics(nok_files):
+    """计算NOK文件的跨文件统计特征"""
     
     stats = {
-        'worst_vs_best_comparison': {},
         'dimension_severity_ranking': [],
-        'common_anomaly_times': []
+        'common_anomaly_times': [],
+        'nok_dimension_distribution': {}
     }
-    
-    # 对比最差和最好文件的统计特征
-    for dim in ['MOS', 'NOI', 'DIS', 'COL', 'LOUD']:
-        worst_means = [f['frame_analysis'].get(dim, {}).get('mean', 0) 
-                      for f in worst_files if dim in f.get('frame_analysis', {})]
-        best_means = [f['frame_analysis'].get(dim, {}).get('mean', 0) 
-                     for f in best_files if dim in f.get('frame_analysis', {})]
-        
-        if worst_means and best_means:
-            stats['worst_vs_best_comparison'][dim] = {
-                'worst_avg': float(np.mean(worst_means)),
-                'best_avg': float(np.mean(best_means)),
-                'gap': float(np.mean(best_means) - np.mean(worst_means))
-            }
     
     # 维度严重性排序
     dimension_severity = []
     for dim in ['MOS', 'NOI', 'DIS', 'COL', 'LOUD']:
         below_pcts = [f['frame_analysis'].get(dim, {}).get('below_baseline_pct', 0) 
-                     for f in worst_files if dim in f.get('frame_analysis', {})]
+                     for f in nok_files if dim in f.get('frame_analysis', {})]
         if below_pcts:
             avg_severity = np.mean(below_pcts)
             dimension_severity.append({
@@ -217,16 +190,23 @@ def compute_cross_file_statistics(worst_files, best_files):
         reverse=True
     )
     
+    # NOK维度分布统计
+    nok_dim_count = defaultdict(int)
+    for file_detail in nok_files:
+        for dim in file_detail.get('nok_dimensions', []):
+            nok_dim_count[dim] += 1
+    stats['nok_dimension_distribution'] = dict(nok_dim_count)
+    
     # 寻找共同的异常时间点
     anomaly_times = defaultdict(int)
-    for file_detail in worst_files:
+    for file_detail in nok_files:
         for anomaly in file_detail.get('anomaly_frames', []):
             time_bucket = int(anomaly['time'] / 2) * 2  # 2秒时间桶
             anomaly_times[time_bucket] += 1
     
     # 找出出现频率高的异常时间点
     common_times = [{'time_range': f"{t}-{t+2}s", 'file_count': count} 
-                   for t, count in anomaly_times.items() if count >= 3]
+                   for t, count in anomaly_times.items() if count >= 2]  # 降低阈值，因为NOK文件少
     stats['common_anomaly_times'] = sorted(common_times, key=lambda x: x['file_count'], reverse=True)[:5]
     
     return stats
@@ -351,6 +331,9 @@ def detect_anomalies(worst_files):
 def format_deep_analysis_prompt(summary, deep_analysis):
     """格式化深度分析提示"""
     
+    ok_count = summary['quality_distribution']['ok']
+    nok_count = summary['quality_distribution']['nok']
+    
     prompt = f"""# 音频质量深度数据分析任务
 
 基于NISQA质量评估工具，我已提取了详尽的帧级数据、统计特征和时间模式，请您作为音频质量专家进行深度分析。
@@ -358,27 +341,37 @@ def format_deep_analysis_prompt(summary, deep_analysis):
 ## 数据集概况
 
 - **总文件数**: {summary['total_files']}
-- **质量分布**: 良好{summary['quality_distribution']['good']}个, 中等劣化{summary['quality_distribution']['moderate']}个, 严重劣化{summary['quality_distribution']['severe']}个
+- **质量分布**: OK文件{ok_count}个 ({ok_count/summary['total_files']*100:.1f}%), NOK文件{nok_count}个 ({nok_count/summary['total_files']*100:.1f}%)
+- **NOK维度分布**: {', '.join([f"{k}({len(v)}个)" for k, v in summary['nok_by_dimension'].items()])}
 
 ---
 
-## 第一部分：最差文件帧级详细分析
+## 第一部分：NOK文件帧级详细分析
 
-我提取了{len(deep_analysis['worst_files_detail'])}个质量最差文件的详细数据：
+我提取了{len(deep_analysis['nok_files_detail'])}个质量NOK文件的详细数据：
 
 """
     
-    # 最差文件详情
-    for i, file_detail in enumerate(deep_analysis['worst_files_detail'][:5], 1):
+    # NOK文件详情
+    for i, file_detail in enumerate(deep_analysis['nok_files_detail'], 1):
         prompt += f"""
 ### {i}. {file_detail['filename']}
 
 **基本指标**:
+- 问题维度: {', '.join(file_detail.get('nok_dimensions', []))}
 - MOS文件级差值: {file_detail['mos_diff']:.3f}
 - MOS低于基准帧占比: {file_detail['mos_below_pct']:.1f}%
 
-**元数据解析**:
+**判定依据（帧级为主+突变检测+文件级参考）**:
 """
+        nok_reasons = file_detail.get('nok_reasons', {})
+        if nok_reasons:
+            for dim, reason in nok_reasons.items():
+                prompt += f"- {dim}: {reason}\n"
+        else:
+            prompt += "- （未提供详细判定原因）\n"
+        
+        prompt += "\n**元数据解析**:\n"
         metadata = file_detail['metadata']
         if metadata.get('timestamp'):
             prompt += f"- 录制时间: {metadata['timestamp']}\n"
@@ -400,7 +393,7 @@ def format_deep_analysis_prompt(summary, deep_analysis):
         # 异常帧
         if file_detail['anomaly_frames']:
             prompt += f"\n**检测到{len(file_detail['anomaly_frames'])}个质量突降点**:\n"
-            for anomaly in file_detail['anomaly_frames'][:3]:
+            for anomaly in file_detail['anomaly_frames'][:5]:
                 prompt += f"- {anomaly['dimension']} 在 {anomaly['time']:.1f}秒处下降{anomaly['drop_value']:.3f}\n"
     
     # 跨文件统计
@@ -408,14 +401,16 @@ def format_deep_analysis_prompt(summary, deep_analysis):
 
 ---
 
-## 第二部分：最差 vs 最好文件对比
+## 第二部分：NOK文件统计分析
 
-维度平均差值对比（正值表示最好文件更优）:
 """
     
-    comparison = deep_analysis['statistical_summary'].get('worst_vs_best_comparison', {})
-    for dim, comp_data in comparison.items():
-        prompt += f"- {dim}: 最差组={comp_data['worst_avg']:.3f}, 最好组={comp_data['best_avg']:.3f}, 差距={comp_data['gap']:.3f}\n"
+    # NOK维度分布
+    nok_dist = deep_analysis['statistical_summary'].get('nok_dimension_distribution', {})
+    if nok_dist:
+        prompt += "**NOK维度分布**:\n"
+        for dim, count in sorted(nok_dist.items(), key=lambda x: x[1], reverse=True):
+            prompt += f"- {dim}: {count}个文件\n"
     
     # 维度严重性排序
     prompt += "\n**维度问题严重性排序** (按平均劣化帧百分比):\n"
@@ -425,7 +420,7 @@ def format_deep_analysis_prompt(summary, deep_analysis):
     # 共同异常时间
     common_anomalies = deep_analysis['statistical_summary'].get('common_anomaly_times', [])
     if common_anomalies:
-        prompt += "\n\n**共同异常时间段** (多个文件在此时段同时质量下降):\n"
+        prompt += "\n\n**共同异常时间段** (多个NOK文件在此时段同时质量下降):\n"
         for anomaly in common_anomalies:
             prompt += f"- {anomaly['time_range']}: {anomaly['file_count']}个文件出现异常\n"
     
@@ -499,28 +494,28 @@ def format_deep_analysis_prompt(summary, deep_analysis):
 
 ## 请您深度分析并回答：
 
-### 1. 帧级数据洞察
-- 从帧级统计特征（均值、标准差、范围、分位数）中，您发现了什么质量特征？
-- 哪些文件的波动性（标准差/variability）最大？这反映了什么问题？
+### 1. NOK文件帧级数据洞察
+- 从帧级统计特征（均值、标准差、范围）中，您发现了什么质量特征？
+- 哪些NOK文件的波动性（标准差）最大？这反映了什么问题？
 - 质量趋势分析中，"改善趋势"和"恶化趋势"分别意味着什么？
 
 ### 2. 维度相关性与优先级
-- 五个维度（MOS/NOI/DIS/COL/LOUD）之间是否存在相关性？
-- 哪个维度是"主导因素"（改善它对整体质量提升最大）？
-- 为什么NOI（噪声）的问题最严重？
+- NOK文件中，五个维度（MOS/NOI/DIS/COL/LOUD）之间是否存在相关性？
+- 哪个维度是"主导因素"（最常出现的NOK原因）？
+- 为什么该维度问题最突出？
 
 ### 3. 时间、设备、网络模式深度解读
-- 基于时间统计，哪个日期是"质量事故日"？可能发生了什么？
+- 基于时间统计，哪个日期质量最差？可能发生了什么？
 - 哪个IP地址的设备质量最差？应该如何排查？
-- 不同设备代号（BOXP/BOXR/HF）之间的质量差异说明了什么？
+- 不同设备代号之间的质量差异说明了什么？
 
 ### 4. 异常帧与突变点分析
-- 多个文件在相同时间段出现异常，这是巧合还是系统性问题？
+- 多个NOK文件在相同时间段出现异常，这是巧合还是系统性问题？
 - 质量突降（sudden drops）最常发生在音频的哪个阶段（开头/中间/结尾）？
 - 如何解释"持续劣化"与"极端波动"的区别和原因？
 
 ### 5. 根本原因假设与验证方案
-- 基于所有数据，您对质量问题的根本原因有什么假设？
+- 基于所有数据，您对NOK文件质量问题的根本原因有什么假设？
 - 如何验证这些假设（需要收集哪些额外数据或日志）？
 - 提出3-5个可立即执行的改进措施，按ROI排序。
 
@@ -622,13 +617,16 @@ def main():
         analysis_report = call_llm_for_deep_analysis(prompt, api_config)
         
         # 组合完整报告
+        ok_count = summary['quality_distribution']['ok']
+        nok_count = summary['quality_distribution']['nok']
+        
         full_report = f"""# NISQA音频质量深度数据分析报告
 
 **生成时间**: {__import__('datetime').datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
 **分析工具**: NISQA + LLM深度数据分析
 **分析模型**: {api_config.get('model')}
-**数据集**: {summary['total_files']}个音频文件
-**分析文件**: {len(deep_analysis['worst_files_detail'])}个最差 + {len(deep_analysis['best_files_detail'])}个最好
+**数据集**: {summary['total_files']}个音频文件（{ok_count}个OK, {nok_count}个NOK）
+**分析聚焦**: {len(deep_analysis['nok_files_detail'])}个NOK文件的深度分析
 
 ---
 
@@ -639,16 +637,16 @@ def main():
 ## 附录：数据来源说明
 
 本报告基于以下详细数据：
-1. **帧级统计**: 每个文件的5维度帧差值分布（均值、标准差、分位数、范围等）
+1. **帧级统计**: 每个NOK文件的5维度帧差值分布（均值、标准差、范围等）
 2. **趋势分析**: 线性回归斜率、趋势类型（稳定/改善/恶化）
 3. **异常检测**: 质量突降点、极端波动、持续劣化、多维度失败
 4. **时间模式**: 按日期、IP地址、设备类型分组的质量统计
-5. **跨文件对比**: 最差与最好文件的统计特征对比
+5. **NOK统计**: NOK维度分布、问题严重性排序
 
 ### 数据文件
 - 详细数据: baseline_compare_*.json (共{summary['total_files']}个)
 - 可视化图表: baseline_compare_all.png, baseline_compare_heatmap.png
-- 数据汇总: quality_summary.json
+- 数据汇总: quality_summary_7files.json
 
 ---
 *本报告由NISQA质量评估工具结合大语言模型深度数据分析自动生成*
