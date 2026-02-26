@@ -40,3 +40,7 @@ voice_quality_tool/nisqa/nisqa_repo/
 *.tmp
 .DS_Store
 Thumbs.db
+
+# 全局忽略图片与JSON
+*.png
+*.json

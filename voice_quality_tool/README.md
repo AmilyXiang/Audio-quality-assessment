@@ -233,6 +233,23 @@ Frame-Level Quality (Temporal Segments):
 python nisqa/analyze_nisqa.py --audio audio.wav --model nisqa/weights/nisqa.tar
 ```
 
+#### 4. 基准对比分析（推荐批量问题定位）
+
+```bash
+# 使用基准文件对目录内测试音频做逐帧对比，并自动清理临时结果
+python nisqa/analyze_nisqa_baseline_compare.py \
+  --baseline ../robotic/1010baseline.wav \
+  --test-dir ../robotic/tst \
+  --model nisqa/weights/nisqa.tar \
+  --clean
+```
+
+说明：
+- 默认输出目录为测试录音所在目录；可通过 `--output_dir` 覆盖。
+- `--clean` 会删除 `baseline_compare_*.png/.json` 临时文件，仅保留 `baseline_compare_all.*` 和 `baseline_compare_heatmap.*`。
+- 生成 Excel 时默认文件名为 `result.xlsx`（可通过 `--excel-output` 覆盖）。
+- 如需保留帧级中间数据，可加 `--keep-framewise`。
+
 #### 配置说明
 
 **窗口长度 (seg_length)**：

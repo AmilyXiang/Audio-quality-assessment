@@ -32,9 +32,11 @@ from nisqa.NISQA_model import nisqaModel
 try:
     from generate_problem_excel import process_single_file
     EXCEL_AVAILABLE = True
-except ImportError:
+    EXCEL_IMPORT_ERROR = None
+except ImportError as e:
     EXCEL_AVAILABLE = False
-    print("[警告] 无法导入generate_problem_excel模块，Excel生成功能不可用")
+    EXCEL_IMPORT_ERROR = str(e)
+    print(f"[警告] 无法导入generate_problem_excel模块，Excel生成功能不可用: {e}")
 
 
 class BaselineComparator:
@@ -371,11 +373,11 @@ class BaselineComparator:
             # 质量判定
             if stats['percent_below_baseline'] > 50:
                 severity = "严重" if stats['mean_degradation'] < -0.5 else "中等"
-                print(f"  ⚠️  质量问题: {severity}劣化（超过50%帧低于基准）")
+                print(f"  ！  质量问题: {severity}劣化（超过50%帧低于基准）")
             elif stats['percent_below_baseline'] > 20:
-                print(f"  ⚠️  质量问题: 轻度劣化（20-50%帧低于基准）")
+                print(f"  ！  质量问题: 轻度劣化（20-50%帧低于基准）")
             elif stats['mean_diff'] < -0.1:
-                print(f"  ⚠️  整体略低于基准，但波动较小")
+                print(f"  ！  整体略低于基准，但波动较小")
             else:
                 print(f"  ✓ 质量良好（与基准相当或优于基准）")
     
@@ -599,7 +601,9 @@ class BaselineComparator:
 
 def analyze_file_if_needed(audio_path, model_path, seg_length=15.0, hop_length=0.5):
     """如果JSON不存在，则运行帧级分析"""
-    json_path = f"framewise_{Path(audio_path).stem}.json"
+    audio_path = os.path.abspath(audio_path)
+    audio_dir = os.path.dirname(audio_path)
+    json_path = os.path.join(audio_dir, f"framewise_{Path(audio_path).stem}.json")
     
     if os.path.exists(json_path):
         print(f"[已存在] {json_path}")
@@ -699,6 +703,37 @@ def analyze_file_if_needed(audio_path, model_path, seg_length=15.0, hop_length=0
     return json_path
 
 
+def cleanup_baseline_compare_temp_files(output_dir):
+    """清理baseline_compare临时结果文件，保留all和heatmap"""
+    import glob
+
+    output_dir = os.path.abspath(output_dir)
+    keep_prefixes = {'baseline_compare_all', 'baseline_compare_heatmap'}
+    deleted_count = 0
+
+    patterns = ['baseline_compare_*.png', 'baseline_compare_*.json']
+    candidates = []
+    for pattern in patterns:
+        candidates.extend(glob.glob(os.path.join(output_dir, pattern)))
+
+    # 去重
+    candidates = sorted(set(candidates))
+
+    for file_path in candidates:
+        stem = Path(file_path).stem
+        if stem in keep_prefixes:
+            continue
+        try:
+            os.remove(file_path)
+            print(f"[已删除] {os.path.relpath(file_path)}")
+            deleted_count += 1
+        except Exception as e:
+            print(f"[删除失败] {os.path.relpath(file_path)}: {e}")
+
+    print(f"\n[清理完成] baseline_compare临时png/json删除 {deleted_count} 个（保留all/heatmap）")
+    return deleted_count
+
+
 def main():
     parser = argparse.ArgumentParser(description='NISQA基准对比分析工具')
     parser.add_argument('--baseline', required=True, 
@@ -713,16 +748,18 @@ def main():
                        help='窗口长度（秒），默认15.0')
     parser.add_argument('--hop_length', type=float, default=0.5,
                        help='跳跃步长（秒），默认0.5')
-    parser.add_argument('--output_dir', default='.',
-                       help='输出目录，默认当前目录')
+    parser.add_argument('--output_dir', default=None,
+                       help='输出目录（默认：测试录音所在目录）')
     parser.add_argument('--keep-framewise', action='store_true',
                        help='保留framewise_*.json中间文件（默认自动删除）')
     parser.add_argument('--generate-excel', '-e', action='store_true',
                        help='自动生成问题文件Excel报告（仅包含NOK文件）')
-    parser.add_argument('--excel-output', default='problem_files_report_v6.xlsx',
-                       help='Excel报告输出路径（默认: problem_files_report_v6.xlsx）')
+    parser.add_argument('--excel-output', default='result.xlsx',
+                       help='Excel报告输出路径（默认: result.xlsx）')
     parser.add_argument('--frame-threshold', type=float, default=-0.3,
                        help='问题帧差异阈值（默认-0.3）')
+    parser.add_argument('--clean', action='store_true',
+                       help='自动删除baseline_compare临时png/json，仅保留all和heatmap结果')
     
     args = parser.parse_args()
     
@@ -732,22 +769,39 @@ def main():
     
     # 如果提供了--test-dir，自动扫描目录
     if args.test_dir:
-        import glob
         baseline_path = os.path.abspath(args.baseline)
         test_dir = os.path.abspath(args.test_dir)
-        
-        # 扫描所有.wav文件
-        all_wavs = sorted(glob.glob(os.path.join(test_dir, '*.wav')))
+
+        # 递归扫描目录中的所有wav文件
+        all_wavs = []
+        for file_path in Path(test_dir).rglob('*'):
+            if file_path.is_file() and file_path.suffix.lower() == '.wav':
+                all_wavs.append(str(file_path.resolve()))
+        all_wavs = sorted(all_wavs)
         
         # 排除基准文件
         test_files = [f for f in all_wavs if os.path.abspath(f) != baseline_path]
         
         if not test_files:
-            print(f"[错误] 在目录 {test_dir} 中没有找到测试文件（排除基准文件后）")
+            print(f"[错误] 在目录 {test_dir} 中没有找到测试文件（递归扫描并排除基准文件后）")
             return
         
-        print(f"[信息] 从目录 {test_dir} 中找到 {len(test_files)} 个测试文件")
+        print(f"[信息] 从目录 {test_dir}（递归）中找到 {len(test_files)} 个测试文件")
         args.test = test_files
+
+    # 统一绝对路径
+    args.baseline = os.path.abspath(args.baseline)
+    args.test = [os.path.abspath(test_file) for test_file in args.test]
+
+    # 默认输出目录：测试录音所在目录（若无测试文件则回退到基准目录）
+    if not args.output_dir:
+        if args.test:
+            args.output_dir = os.path.dirname(args.test[0])
+        else:
+            args.output_dir = os.path.dirname(args.baseline)
+    args.output_dir = os.path.abspath(args.output_dir)
+    os.makedirs(args.output_dir, exist_ok=True)
+    print(f"[信息] 输出目录: {args.output_dir}")
     
     # 1. 分析基准文件
     print("="*80)
@@ -847,7 +901,10 @@ def main():
     # 生成Excel报告（如果启用）
     if args.generate_excel:
         if not EXCEL_AVAILABLE:
-            print("\n[错误] Excel生成功能不可用，请检查generate_problem_excel.py是否存在")
+            print("\n[错误] Excel生成功能不可用")
+            if EXCEL_IMPORT_ERROR:
+                print(f"[错误详情] {EXCEL_IMPORT_ERROR}")
+            print("[建议] 请安装依赖后重试：pip install openpyxl")
         else:
             # 计算步骤编号
             excel_step_num = 3
@@ -865,6 +922,8 @@ def main():
                 print("[警告] 本次未生成baseline_compare JSON文件，跳过Excel生成")
             else:
                 excel_path = Path(args.excel_output)
+                if not excel_path.is_absolute():
+                    excel_path = Path(args.output_dir) / excel_path
                 # 如果Excel文件已存在，删除它以重新生成
                 if excel_path.exists():
                     excel_path.unlink()
@@ -890,6 +949,21 @@ def main():
                 print(f"  - NOK文件: {nok_count} 个（已记录到Excel）")
                 print(f"[保存] {excel_path}")
                 print("="*80)
+
+    # 清理baseline_compare临时png/json（保留all和heatmap）
+    if args.clean:
+        clean_step_num = 3
+        if len(all_comparisons) > 1:
+            clean_step_num += 1  # 综合对比图
+        if cleanup_step_executed:
+            clean_step_num += 1  # framewise清理
+        if args.generate_excel:
+            clean_step_num += 1  # Excel报告
+
+        print("\n" + "="*80)
+        print(f"步骤{clean_step_num}: 清理baseline_compare临时文件")
+        print("="*80)
+        cleanup_baseline_compare_temp_files(args.output_dir)
 
 
 if __name__ == '__main__':

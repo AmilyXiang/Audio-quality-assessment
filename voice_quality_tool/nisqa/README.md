@@ -44,12 +44,40 @@ python analyze_nisqa_framewise.py --audio ../path/to/audio.wav --model weights/n
 python analyze_nisqa.py --audio ../path/to/audio.wav --model weights/nisqa.tar
 ```
 
+### 4. 基准对比分析（多文件）
+
+使用基准音频对多个测试音频进行逐帧对比，输出单文件对比图、JSON结果，以及多文件汇总图。
+
+```bash
+# 扫描目录中的所有wav（自动排除baseline）
+python analyze_nisqa_baseline_compare.py \
+  --baseline ../robotic/1010baseline.wav \
+  --test-dir ../robotic/tst \
+  --model weights/nisqa.tar \
+  --clean
+```
+
+**关键参数**：
+- `--output_dir`：输出目录（默认：测试录音所在目录）
+- `--keep-framewise`：保留 `framewise_*.json` 中间文件（默认会自动清理）
+- `--clean`：清理 `baseline_compare_*.png/.json` 临时结果，仅保留：
+  - `baseline_compare_all.png`
+  - `baseline_compare_heatmap.png`
+  - `baseline_compare_all.json`（如存在）
+  - `baseline_compare_heatmap.json`（如存在）
+- `--generate-excel`：生成问题文件 Excel 报告（默认文件名：`result.xlsx`）
+
+**输出说明**：
+- 单文件结果：`baseline_compare_<testname>.png/.json`
+- 汇总结果：`baseline_compare_all.png`、`baseline_compare_heatmap.png`
+
 ## 文件说明
 
 | 文件 | 功能 | 推荐度 |
 |------|------|--------|
 | `analyze_nisqa_framewise.py` | 帧级时序分析，支持问题定位 | ⭐⭐⭐⭐⭐ |
 | `analyze_nisqa.py` | 标准NISQA分析，仅文件级评分 | ⭐⭐⭐ |
+| `analyze_nisqa_baseline_compare.py` | 基准对比分析（支持多文件、汇总图、临时文件清理） | ⭐⭐⭐⭐⭐ |
 | `nisqa_full_analysis.py` | 完整分析（包含所有模式） | ⭐⭐⭐⭐ |
 | `download_nisqa_model.py` | 模型下载工具 | 🔧 |
 
