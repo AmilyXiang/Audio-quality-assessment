@@ -15,8 +15,6 @@ import os
 import sys
 import json
 import argparse
-import types
-import importlib
 import numpy as np
 import matplotlib.pyplot as plt
 from pathlib import Path
@@ -25,17 +23,14 @@ from pathlib import Path
 plt.rcParams['font.sans-serif'] = ['SimHei', 'Microsoft YaHei', 'DejaVu Sans']
 plt.rcParams['axes.unicode_minus'] = False
 
-# 添加nisqa_repo到路径（绝对路径），并将nisqa指向本地真实包目录
-SCRIPT_DIR = Path(__file__).resolve().parent
-NISQA_REPO_DIR = SCRIPT_DIR / 'nisqa_repo'
-NISQA_PKG_DIR = NISQA_REPO_DIR / 'nisqa'
-if str(NISQA_REPO_DIR) not in sys.path:
-    sys.path.insert(0, str(NISQA_REPO_DIR))
+# 添加nisqa_repo到路径，并注册为nisqa模块以支持包内相对导入
+_nisqa_repo_parent = os.path.dirname(__file__)
+if _nisqa_repo_parent not in sys.path:
+    sys.path.insert(0, _nisqa_repo_parent)
+import nisqa_repo
+sys.modules['nisqa'] = nisqa_repo
 
-local_nisqa_pkg = types.ModuleType('nisqa')
-local_nisqa_pkg.__path__ = [str(NISQA_PKG_DIR)]
-sys.modules['nisqa'] = local_nisqa_pkg
-nisqaModel = importlib.import_module('nisqa.NISQA_model').nisqaModel
+from nisqa.NISQA_model import nisqaModel
 
 # 导入Excel生成函数
 try:
@@ -626,9 +621,10 @@ def analyze_file_if_needed(audio_path, model_path, seg_length=15.0, hop_length=0
     import pandas as pd
     
     # 导入 predict_dim_framewise 函数
-    if str(SCRIPT_DIR) not in sys.path:
-        sys.path.insert(0, str(SCRIPT_DIR))
+    sys.path.insert(0, os.path.dirname(__file__))
     from analyze_nisqa_framewise import predict_dim_framewise
+    # nisqa_repo已在模块顶部注册为nisqa
+    from nisqa.NISQA_model import nisqaModel
     
     # 配置参数
     args_dict = {
