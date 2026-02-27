@@ -23,8 +23,12 @@ from pathlib import Path
 plt.rcParams['font.sans-serif'] = ['SimHei', 'Microsoft YaHei', 'DejaVu Sans']
 plt.rcParams['axes.unicode_minus'] = False
 
-# 添加nisqa_repo到路径
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'nisqa_repo'))
+# 添加nisqa_repo到路径，并注册为nisqa模块以支持包内相对导入
+_nisqa_repo_parent = os.path.dirname(__file__)
+if _nisqa_repo_parent not in sys.path:
+    sys.path.insert(0, _nisqa_repo_parent)
+import nisqa_repo
+sys.modules['nisqa'] = nisqa_repo
 
 from nisqa.NISQA_model import nisqaModel
 
@@ -318,7 +322,7 @@ class BaselineComparator:
                 for dim, desc in problem_dims.items():
                     print(f"  - {dim}: {desc}")
         else:
-            print(" ✓")
+            print("OK")
         
         # 文件级对比
         print("\n" + "-"*80)
@@ -333,9 +337,9 @@ class BaselineComparator:
             diff = comparison['file_level']['diff'][metric]
             
             if diff >= 0:
-                status = '✓ 优于基准' if diff > 0.1 else '≈ 相当'
+                status = 'OK 优于基准' if diff > 0.1 else '≈ 相当'
             else:
-                status = '✗ 劣于基准' if diff < -0.1 else '≈ 相当'
+                status = 'NOK 劣于基准' if diff < -0.1 else '≈ 相当'
             
             print(f"{metric.upper():<12} {base_val:<10.3f} {test_val:<10.3f} {diff:+.3f}     {status}")
         
@@ -379,7 +383,7 @@ class BaselineComparator:
             elif stats['mean_diff'] < -0.1:
                 print(f"  ！  整体略低于基准，但波动较小")
             else:
-                print(f"  ✓ 质量良好（与基准相当或优于基准）")
+                print(f" OK 质量良好（与基准相当或优于基准）")
     
     def _get_metric_name(self, metric):
         """获取维度中文名"""
@@ -619,6 +623,7 @@ def analyze_file_if_needed(audio_path, model_path, seg_length=15.0, hop_length=0
     # 导入 predict_dim_framewise 函数
     sys.path.insert(0, os.path.dirname(__file__))
     from analyze_nisqa_framewise import predict_dim_framewise
+    # nisqa_repo已在模块顶部注册为nisqa
     from nisqa.NISQA_model import nisqaModel
     
     # 配置参数
