@@ -236,12 +236,20 @@ python nisqa/analyze_nisqa.py --audio audio.wav --model nisqa/weights/nisqa.tar
 #### 4. 基准对比分析（推荐批量问题定位）
 
 ```bash
-# 使用基准文件对目录内测试音频做逐帧对比，并自动清理临时结果
+# 目录批量对比（默认自动选基准）
 python nisqa/analyze_nisqa_baseline_compare.py \
-  --baseline ../robotic/1010baseline.wav \
   --test-dir ../robotic/tst \
   --model nisqa/weights/nisqa.tar \
   --clean
+```
+
+```bash
+# 手动基准模式（与自动基准互斥）
+python nisqa/analyze_nisqa_baseline_compare.py \
+  --no-auto-baseline \
+  --baseline ../robotic/1010baseline.wav \
+  --test-dir ../robotic/tst \
+  --model nisqa/weights/nisqa.tar
 ```
 
 说明：
@@ -249,6 +257,10 @@ python nisqa/analyze_nisqa_baseline_compare.py \
 - `--clean` 会删除 `baseline_compare_*.png/.json` 临时文件，仅保留 `baseline_compare_all.*` 和 `baseline_compare_heatmap.*`。
 - 生成 Excel 时默认文件名为 `result.xlsx`（可通过 `--excel-output` 覆盖）。
 - 如需保留帧级中间数据，可加 `--keep-framewise`。
+- 自动基准默认开启；可用 `--no-auto-baseline` 切换到手动 `--baseline`。
+- 自动基准采用前/中/后三段策略，段比例由 `--baseline-band-ratio` 控制（默认 `0.1`）；并在三段样本中去掉 1 个最高分和 1 个最低分后再计算目标分。
+- 当候选文件数 `< 5` 时，必须手动指定基准（`--no-auto-baseline --baseline ...`）。
+- 分析前默认执行文件级时间对齐；可用 `--no-file-align` 关闭。
 
 #### 配置说明
 

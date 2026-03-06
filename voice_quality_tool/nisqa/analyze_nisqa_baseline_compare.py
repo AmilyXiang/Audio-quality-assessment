@@ -18,6 +18,11 @@ import argparse
 import numpy as np
 import matplotlib.pyplot as plt
 from pathlib import Path
+import tempfile
+import shutil
+
+import librosa
+import soundfile as sf
 
 # 配置matplotlib中文显示
 plt.rcParams['font.sans-serif'] = ['SimHei', 'Microsoft YaHei', 'DejaVu Sans']
@@ -56,6 +61,7 @@ class BaselineComparator:
         self.baseline_json_path = baseline_json_path
         self.baseline_data = self._load_json(baseline_json_path)
         self.baseline_frames = self.baseline_data['frame_level']['frames']
+        self.hop_length = float(self.baseline_data['frame_level'].get('hop_length', 0.5))
         
         print(f"[基准加载] {os.path.basename(baseline_json_path)}")
         print(f"  文件级MOS: {self.baseline_data['file_level']['mos']:.3f}")
@@ -123,7 +129,7 @@ class BaselineComparator:
         baseline_frames, test_frames, lag = self._align_frames(self.baseline_frames, test_frames)
         
         if lag != 0:
-            print(f"[对齐] 检测到时间偏移: {lag}帧 ({lag * 0.5:.1f}秒), 已自动对齐")
+            print(f"[对齐] 检测到时间偏移: {lag}帧 ({lag * self.hop_length:.1f}秒), 已自动对齐")
         
         if len(test_frames) != len(baseline_frames):
             print(f"[对齐后] 基准帧数={len(baseline_frames)}, 测试帧数={len(test_frames)}")
@@ -616,8 +622,6 @@ def analyze_file_if_needed(audio_path, model_path, seg_length=15.0, hop_length=0
     print(f"[分析中] {audio_path}")
     
     # 导入必要的模块
-    import librosa
-    import sys
     import pandas as pd
     
     # 导入 predict_dim_framewise 函数
@@ -708,6 +712,112 @@ def analyze_file_if_needed(audio_path, model_path, seg_length=15.0, hop_length=0
     return json_path
 
 
+def _fft_cross_correlation(a, b):
+    """高效计算 full 模式互相关，结果等价于 np.correlate(a, b, mode='full')。"""
+    full_len = len(a) + len(b) - 1
+    nfft = 1 << (full_len - 1).bit_length()
+    fa = np.fft.rfft(a, n=nfft)
+    fb = np.fft.rfft(b, n=nfft)
+    corr = np.fft.irfft(fa * np.conj(fb), n=nfft)
+    # 将循环相关重排为线性 full 相关
+    return np.concatenate((corr[-(len(b) - 1):], corr[:len(a)]))
+
+
+def _estimate_audio_lag_seconds(baseline_path, test_path, align_sr=8000, max_shift_sec=3.0):
+    """基于降采样单声道波形估计 test 相对 baseline 的时间偏移（秒）。"""
+    base, _ = librosa.load(baseline_path, sr=align_sr, mono=True)
+    test, _ = librosa.load(test_path, sr=align_sr, mono=True)
+
+    if len(base) < 2 or len(test) < 2:
+        return 0.0
+
+    # 去直流并归一化，提升互相关稳健性
+    base = base.astype(np.float64)
+    test = test.astype(np.float64)
+    base -= np.mean(base)
+    test -= np.mean(test)
+
+    base_std = np.std(base)
+    test_std = np.std(test)
+    if base_std > 1e-12:
+        base /= base_std
+    if test_std > 1e-12:
+        test /= test_std
+
+    corr = _fft_cross_correlation(base, test)
+    lags = np.arange(-(len(test) - 1), len(base))
+
+    max_lag = int(max(0, round(max_shift_sec * align_sr)))
+    if max_lag > 0:
+        mask = (lags >= -max_lag) & (lags <= max_lag)
+        corr_view = corr[mask]
+        lags_view = lags[mask]
+    else:
+        corr_view = corr
+        lags_view = lags
+
+    if len(corr_view) == 0:
+        return 0.0
+
+    lag_samples = int(lags_view[int(np.argmax(corr_view))])
+    return lag_samples / float(align_sr)
+
+
+def _shift_audio_keep_length(audio_data, shift_samples):
+    """按样本偏移音频并保持长度不变：正值向右移(前补零)，负值向左移(裁掉开头)。"""
+    if shift_samples == 0:
+        return audio_data.copy()
+
+    n = audio_data.shape[0]
+    out = np.zeros_like(audio_data)
+
+    if shift_samples > 0:
+        if shift_samples < n:
+            out[shift_samples:] = audio_data[:n - shift_samples]
+    else:
+        s = -shift_samples
+        if s < n:
+            out[:n - s] = audio_data[s:]
+
+    return out
+
+
+def align_test_audio_to_baseline(baseline_path, test_path, output_dir, align_sr=8000, max_shift_sec=3.0):
+    """
+    先做原始音频文件级对齐，再输出对齐后的测试音频临时文件。
+
+    Returns:
+        tuple: (aligned_wav_path, info_dict)
+    """
+    baseline_path = os.path.abspath(baseline_path)
+    test_path = os.path.abspath(test_path)
+
+    lag_seconds = _estimate_audio_lag_seconds(
+        baseline_path,
+        test_path,
+        align_sr=align_sr,
+        max_shift_sec=max_shift_sec,
+    )
+
+    test_audio, test_sr = sf.read(test_path)
+    shift_samples = int(round(lag_seconds * test_sr))
+
+    aligned_audio = _shift_audio_keep_length(test_audio, shift_samples)
+
+    aligned_dir = os.path.join(os.path.abspath(output_dir), '.aligned_audio_tmp')
+    os.makedirs(aligned_dir, exist_ok=True)
+    aligned_path = os.path.join(aligned_dir, f'{Path(test_path).stem}_aligned.wav')
+    sf.write(aligned_path, aligned_audio, test_sr)
+
+    info = {
+        'lag_seconds': float(lag_seconds),
+        'shift_samples': int(shift_samples),
+        'sample_rate': int(test_sr),
+        'aligned_path': aligned_path,
+    }
+    return aligned_path, info
+
+
 def cleanup_baseline_compare_temp_files(output_dir):
     """清理baseline_compare临时结果文件，保留all和heatmap"""
     import glob
@@ -739,9 +849,136 @@ def cleanup_baseline_compare_temp_files(output_dir):
     return deleted_count
 
 
+def _load_file_level_from_framewise_json(json_path):
+    """读取 framewise JSON 中的 file_level 分数。"""
+    with open(json_path, 'r', encoding='utf-8') as f:
+        data = json.load(f)
+    return data.get('file_level', {})
+
+
+def _calc_baseline_composite_score(file_level):
+    """计算自动选基准使用的复合分（越高越好）。"""
+    keys = ['mos', 'noi', 'dis', 'col', 'loud']
+    vals = [float(file_level.get(k, 0.0)) for k in keys]
+    return float(np.mean(vals))
+
+
+def auto_select_baseline_file(candidate_files, model_path, seg_length, hop_length, band_ratio=0.1):
+    """
+    自动选择基准文件：
+    1) 对候选音频做NISQA文件级评分并排序
+    2) 取前/中/后各 band_ratio 比例（k=ceil(band_ratio*X)）分别求均值
+    3) 合并三段样本后，去掉1个最高分和1个最低分
+    4) 用剩余样本均值作为目标分，选最接近目标分的文件作为基准
+
+    Returns:
+        tuple: (best_file_path, ranking_list, selection_meta)
+    """
+    if not candidate_files:
+        raise ValueError('自动选基准失败：候选文件为空')
+
+    ranking = []
+    print("\n" + "=" * 80)
+    print("[自动基准] 开始评估候选文件")
+    print("=" * 80)
+
+    for wav_path in candidate_files:
+        json_path = analyze_file_if_needed(wav_path, model_path, seg_length, hop_length)
+        file_level = _load_file_level_from_framewise_json(json_path)
+        composite = _calc_baseline_composite_score(file_level)
+        ranking.append({
+            'file': os.path.abspath(wav_path),
+            'json': json_path,
+            'score': composite,
+            'mos': float(file_level.get('mos', 0.0)),
+            'noi': float(file_level.get('noi', 0.0)),
+            'dis': float(file_level.get('dis', 0.0)),
+            'col': float(file_level.get('col', 0.0)),
+            'loud': float(file_level.get('loud', 0.0)),
+        })
+
+    ranking.sort(key=lambda x: (x['score'], x['mos']), reverse=True)
+
+    total = len(ranking)
+    k = int(np.ceil(total * band_ratio))
+    k = max(1, min(k, total))
+
+    # 尽量避免三段重叠；样本太少时允许重叠但仍可给出稳定结果
+    if total >= 3 and 3 * k > total:
+        k = max(1, total // 3)
+
+    top_group = ranking[:k]
+    mid_start = max(0, (total - k) // 2)
+    middle_group = ranking[mid_start:mid_start + k]
+    bottom_group = ranking[-k:]
+
+    top_mean_score = float(np.mean([x['score'] for x in top_group]))
+    middle_mean_score = float(np.mean([x['score'] for x in middle_group]))
+    bottom_mean_score = float(np.mean([x['score'] for x in bottom_group]))
+
+    # 三段样本合并后去重（按文件路径）
+    pool_map = {}
+    for item in top_group + middle_group + bottom_group:
+        pool_map[item['file']] = item
+    sample_pool = list(pool_map.values())
+
+    removed_high = None
+    removed_low = None
+    if len(sample_pool) >= 3:
+        by_score = sorted(sample_pool, key=lambda x: x['score'])
+        removed_low = by_score[0]
+        removed_high = by_score[-1]
+        trimmed_pool = by_score[1:-1]
+    else:
+        # 样本过少时不去极值，避免空集合
+        trimmed_pool = sample_pool
+
+    target_score = float(np.mean([x['score'] for x in trimmed_pool]))
+
+    # 选择最接近目标分的文件作为基准，次级按MOS高者优先
+    best = sorted(
+        ranking,
+        key=lambda x: (abs(x['score'] - target_score), -x['mos'])
+    )[0]
+
+    print("[自动基准] 候选排序（前5）：")
+    for i, item in enumerate(ranking[:5], start=1):
+        print(
+            f"  {i}. {Path(item['file']).name} | score={item['score']:.3f} | "
+            f"MOS={item['mos']:.3f} NOI={item['noi']:.3f} DIS={item['dis']:.3f} "
+            f"COL={item['col']:.3f} LOUD={item['loud']:.3f}"
+        )
+
+    print(f"[自动基准] X={total}, ratio={band_ratio:.3f}, k=ceil(ratio*X)={k}")
+    print(f"[自动基准] 前{band_ratio*100:.0f}%均值: {top_mean_score:.3f}")
+    print(f"[自动基准] 中{band_ratio*100:.0f}%均值: {middle_mean_score:.3f}")
+    print(f"[自动基准] 后{band_ratio*100:.0f}%均值: {bottom_mean_score:.3f}")
+    print(f"[自动基准] 三段样本数(去重后): {len(sample_pool)}")
+    if removed_high and removed_low:
+        print(f"[自动基准] 去极值: 最高={Path(removed_high['file']).name}({removed_high['score']:.3f}), "
+              f"最低={Path(removed_low['file']).name}({removed_low['score']:.3f})")
+    else:
+        print("[自动基准] 样本过少，跳过去极值")
+    print(f"[自动基准] 目标分(去极值后均值): {target_score:.3f}")
+    print(f"[自动基准] 选择: {best['file']} (score={best['score']:.3f})")
+
+    selection_meta = {
+        'total_files': total,
+        'band_ratio': float(band_ratio),
+        'k_band': k,
+        'top_mean_score': top_mean_score,
+        'middle_mean_score': middle_mean_score,
+        'bottom_mean_score': bottom_mean_score,
+        'sample_pool_size': len(sample_pool),
+        'trimmed_pool_size': len(trimmed_pool),
+        'target_score': target_score,
+    }
+    return best['file'], ranking, selection_meta
+
+
 def main():
     parser = argparse.ArgumentParser(description='NISQA基准对比分析工具')
-    parser.add_argument('--baseline', required=True, 
+    parser.add_argument('--baseline', required=False,
                        help='基准音频文件路径（高质量参考）')
     parser.add_argument('--test', nargs='+',
                        help='测试音频文件路径（可多个）')
@@ -765,16 +1002,42 @@ def main():
                        help='问题帧差异阈值（默认-0.3）')
     parser.add_argument('--clean', action='store_true',
                        help='自动删除baseline_compare临时png/json，仅保留all和heatmap结果')
+    parser.add_argument('--file-align', dest='file_align', action='store_true',
+                       help='分析前先做原始音频文件级时间对齐（默认开启）')
+    parser.add_argument('--no-file-align', dest='file_align', action='store_false',
+                       help='关闭分析前的原始音频文件级时间对齐')
+    parser.add_argument('--align-sr', type=int, default=8000,
+                       help='文件级对齐时用于估计偏移的采样率（默认8000Hz）')
+    parser.add_argument('--align-max-shift', type=float, default=3.0,
+                       help='文件级对齐最大允许偏移（秒，默认3.0）')
+    parser.add_argument('--keep-aligned-files', action='store_true',
+                       help='保留文件级对齐生成的临时wav（默认自动删除）')
+    parser.add_argument('--auto-baseline', dest='auto_baseline', action='store_true',
+                       help='自动从候选音频中选择基准文件（三段均值策略，默认开启）')
+    parser.add_argument('--no-auto-baseline', dest='auto_baseline', action='store_false',
+                       help='关闭自动基准，改为手动使用--baseline')
+    parser.add_argument('--baseline-band-ratio', type=float, default=0.1,
+                       help='自动基准三段比例（前/中/后各占比，默认0.1）')
+    parser.set_defaults(file_align=True, auto_baseline=True)
     
     args = parser.parse_args()
     
-    # 验证参数：必须提供--test或--test-dir之一
+    # 验证参数
     if not args.test and not args.test_dir:
         parser.error("必须提供--test或--test-dir参数之一")
+    if args.auto_baseline and args.baseline:
+        parser.error("--auto-baseline 与 --baseline 互斥，请二选一")
+    if not args.auto_baseline and not args.baseline:
+        parser.error("未开启--auto-baseline时，必须提供--baseline")
+    if args.auto_baseline:
+        if args.baseline_band_ratio <= 0:
+            parser.error("--baseline-band-ratio 必须大于0")
+        if args.baseline_band_ratio >= 0.5:
+            parser.error("--baseline-band-ratio 建议小于0.5（避免分段失真）")
     
     # 如果提供了--test-dir，自动扫描目录
     if args.test_dir:
-        baseline_path = os.path.abspath(args.baseline)
+        baseline_path = os.path.abspath(args.baseline) if args.baseline else None
         test_dir = os.path.abspath(args.test_dir)
 
         # 递归扫描目录中的所有wav文件
@@ -784,8 +1047,11 @@ def main():
                 all_wavs.append(str(file_path.resolve()))
         all_wavs = sorted(all_wavs)
         
-        # 排除基准文件
-        test_files = [f for f in all_wavs if os.path.abspath(f) != baseline_path]
+        # 非自动模式下排除基准文件，自动模式保留全部候选用于选基准
+        if args.auto_baseline:
+            test_files = all_wavs
+        else:
+            test_files = [f for f in all_wavs if os.path.abspath(f) != baseline_path]
         
         if not test_files:
             print(f"[错误] 在目录 {test_dir} 中没有找到测试文件（递归扫描并排除基准文件后）")
@@ -795,8 +1061,45 @@ def main():
         args.test = test_files
 
     # 统一绝对路径
-    args.baseline = os.path.abspath(args.baseline)
+    if args.baseline:
+        args.baseline = os.path.abspath(args.baseline)
     args.test = [os.path.abspath(test_file) for test_file in args.test]
+
+    # 自动选择基准
+    auto_selected_baseline_json = None
+    if args.auto_baseline:
+        candidate_files = list(dict.fromkeys(args.test))
+
+        if len(candidate_files) < 5:
+            parser.error(
+                f"候选文件数为{len(candidate_files)}（<5），必须手动指定基准文件："
+                "请使用 --no-auto-baseline --baseline <基准文件>"
+            )
+
+        if len(candidate_files) < 2:
+            parser.error("自动选择基准至少需要2个候选音频")
+
+        selected_baseline, ranking, selection_meta = auto_select_baseline_file(
+            candidate_files,
+            args.model,
+            args.seg_length,
+            args.hop_length,
+            band_ratio=args.baseline_band_ratio,
+        )
+        print(
+            f"[自动基准规则] ratio={selection_meta['band_ratio']:.3f}, "
+            f"前段均值={selection_meta['top_mean_score']:.3f}, "
+            f"中段均值={selection_meta['middle_mean_score']:.3f}, "
+            f"后段均值={selection_meta['bottom_mean_score']:.3f}, "
+            f"目标分={selection_meta['target_score']:.3f}"
+        )
+        args.baseline = selected_baseline
+        args.test = [f for f in candidate_files if os.path.abspath(f) != os.path.abspath(selected_baseline)]
+        selected_item = next((x for x in ranking if os.path.abspath(x['file']) == os.path.abspath(selected_baseline)), None)
+        auto_selected_baseline_json = selected_item['json'] if selected_item else None
+
+        if not args.test:
+            parser.error("自动选择基准后没有剩余测试文件")
 
     # 默认输出目录：测试录音所在目录（若无测试文件则回退到基准目录）
     if not args.output_dir:
@@ -812,7 +1115,11 @@ def main():
     print("="*80)
     print("步骤1: 分析基准文件")
     print("="*80)
-    baseline_json = analyze_file_if_needed(args.baseline, args.model, args.seg_length, args.hop_length)
+    if auto_selected_baseline_json and os.path.exists(auto_selected_baseline_json):
+        baseline_json = auto_selected_baseline_json
+        print(f"[自动基准] 复用评分阶段结果: {baseline_json}")
+    else:
+        baseline_json = analyze_file_if_needed(args.baseline, args.model, args.seg_length, args.hop_length)
     
     # 2. 初始化对比器
     comparator = BaselineComparator(baseline_json)
@@ -824,12 +1131,29 @@ def main():
     
     all_comparisons = []  # 收集所有对比结果
     generated_json_files = []  # 收集本次生成的JSON文件路径
+    aligned_temp_dir = os.path.join(args.output_dir, '.aligned_audio_tmp')
     
     for test_file in args.test:
-        test_json = analyze_file_if_needed(test_file, args.model, args.seg_length, args.hop_length)
+        analysis_input = test_file
+        if args.file_align:
+            aligned_wav, align_info = align_test_audio_to_baseline(
+                args.baseline,
+                test_file,
+                args.output_dir,
+                align_sr=args.align_sr,
+                max_shift_sec=args.align_max_shift,
+            )
+            analysis_input = aligned_wav
+            print(
+                f"[文件对齐] {Path(test_file).name}: 偏移={align_info['lag_seconds']:+.3f}s "
+                f"({align_info['shift_samples']} samples @ {align_info['sample_rate']}Hz)"
+            )
+
+        test_json = analyze_file_if_needed(analysis_input, args.model, args.seg_length, args.hop_length)
         
         # 对比
         comparison = comparator.compare_with_test(test_json)
+        comparison['test_file'] = os.path.basename(test_file)
         all_comparisons.append(comparison)
         
         # 打印报告
@@ -969,6 +1293,14 @@ def main():
         print(f"步骤{clean_step_num}: 清理baseline_compare临时文件")
         print("="*80)
         cleanup_baseline_compare_temp_files(args.output_dir)
+
+    # 清理文件级对齐临时wav
+    if args.file_align and not args.keep_aligned_files and os.path.isdir(aligned_temp_dir):
+        try:
+            shutil.rmtree(aligned_temp_dir)
+            print(f"[清理完成] 已删除文件级对齐临时目录: {aligned_temp_dir}")
+        except Exception as e:
+            print(f"[清理失败] 无法删除文件级对齐临时目录: {e}")
 
 
 if __name__ == '__main__':

@@ -46,26 +46,45 @@ python analyze_nisqa.py --audio ../path/to/audio.wav --model weights/nisqa.tar
 
 ### 4. 基准对比分析（多文件）
 
-使用基准音频对多个测试音频进行逐帧对比，输出单文件对比图、JSON结果，以及多文件汇总图。
+对多个测试音频进行逐帧对比，输出单文件对比图、JSON结果，以及多文件汇总图。
+
+默认会启用自动基准选择（`--auto-baseline`）：
+- 先按复合质量分排序
+- 取前/中/后三段（每段比例由 `--baseline-band-ratio` 控制，默认 `0.1`）
+- 将三段样本合并后去掉 1 个最高分和 1 个最低分
+- 用剩余样本均值生成目标分，选择最接近目标分的文件作为 baseline
 
 ```bash
-# 扫描目录中的所有wav（自动排除baseline）
+# 扫描目录中的所有wav，默认自动选基准
 python analyze_nisqa_baseline_compare.py \
-  --baseline ../robotic/1010baseline.wav \
   --test-dir ../robotic/tst \
   --model weights/nisqa.tar \
   --clean
 ```
 
+```bash
+# 手动指定基准（与自动模式互斥）
+python analyze_nisqa_baseline_compare.py \
+  --no-auto-baseline \
+  --baseline ../robotic/1010baseline.wav \
+  --test-dir ../robotic/tst \
+  --model weights/nisqa.tar
+```
+
 **关键参数**：
 - `--output_dir`：输出目录（默认：测试录音所在目录）
 - `--keep-framewise`：保留 `framewise_*.json` 中间文件（默认会自动清理）
+- `--auto-baseline`：自动选择基准（默认开启）
+- `--no-auto-baseline`：关闭自动基准，改为手动 `--baseline`
+- `--baseline-band-ratio`：自动基准三段比例（前/中/后各占比，默认 `0.1`）
+- 当候选文件数 `< 5` 时，必须手动指定基准（使用 `--no-auto-baseline --baseline ...`）
 - `--clean`：清理 `baseline_compare_*.png/.json` 临时结果，仅保留：
   - `baseline_compare_all.png`
   - `baseline_compare_heatmap.png`
   - `baseline_compare_all.json`（如存在）
   - `baseline_compare_heatmap.json`（如存在）
 - `--generate-excel`：生成问题文件 Excel 报告（默认文件名：`result.xlsx`）
+- `--file-align` / `--no-file-align`：分析前是否做原始音频文件级时间对齐（默认开启）
 
 **输出说明**：
 - 单文件结果：`baseline_compare_<testname>.png/.json`
